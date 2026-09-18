@@ -334,61 +334,64 @@ methods
                            fullfile(baseOutputDir, sprintf('%s_HD', fileName), sprintf('%s_HD_input_HD_params.json', fileName))
                        };
 
-        % Keep only files that actually exist
-        existing = cell(1, numel(configPaths));
-
-        for k = 1:numel(configPaths)
-
-            if isfile(configPaths{k})
-                existing{k} = configPaths{k};
-            end
-
-        end
+        existing = configPaths(cellfun(@isfile, configPaths));
 
         if isempty(existing)
             fprintf('No parameter files found to delete.\n');
             return;
         end
 
-        % Delete each file and record the deleted path
         for k = 1:numel(existing)
             delete(existing{k});
+            fprintf('Deleted: %s\n', existing{k});
         end
 
-        fprintf('Deleted all parameter file(s).\n');
     end
 
     % =====================================================================
     function images = PreviewRendering(obj)
-        % Render the current frame batch with current params.
+
         if isempty(obj.reader)
-            error('HoloDopplerClass:PreviewRendering:noFile', 'No file loaded')
+            error('HoloDopplerClass:PreviewRendering:noFile', ...
+            'No file loaded.');
         end
 
         p = obj.params;
-        firstframe = obj.reader.read_frame_batch(1, p.framePosition);
 
-        if ~isequal(obj.render.Frames(:, :, 1), firstframe) || ...
-                p.batchSize ~= size(obj.render.Frames, 3)
-            obj.render.setFrames( ...
-                obj.reader.read_frame_batch(p.batchSize, p.framePosition));
+        firstFrame = obj.reader.read_frame_batch(1, p.framePosition);
+
+        framesNeedReload = isempty(obj.render.Frames) || ...
+            size(obj.render.Frames, 3) ~= p.batchSize || ...
+            ~isequal(obj.render.Frames(:, :, 1), single(firstFrame));
+
+        if framesNeedReload
+            frames = obj.reader.read_frame_batch( ...
+                p.batchSize, p.framePosition);
+
+            obj.render.setFrames(frames);
         end
 
-        % Pass file metadata alongside rendering params.
         renderParams = obj.buildRenderParams();
+
         obj.render.Render(renderParams, p.imageTypes);
+
         images = obj.render.getImages(p.imageTypes);
 
+        % This resizing is display-only. It must never modify render.H,
+        % render.SH, obj.video, or data sent to SaveVideo.
         for i = 1:numel(p.imageTypes)
+
             image = images{i};
 
-            if ~ismember(p.imageTypes{i}, {'broadening'}) && ...
-                    size(image, 1) ~= size(image, 2)
-                maxDim = max(size(image, 1), size(image, 2));
-                image = imresize(image, [maxDim, maxDim]);
+            if isempty(image) || ismember(p.imageTypes{i}, {'broadening'})
+                continue
             end
 
-            images{i} = image;
+            if size(image, 1) ~= size(image, 2)
+                maxDim = max(size(image, 1), size(image, 2));
+                images{i} = imresize(image, [maxDim, maxDim]);
+            end
+
         end
 
     end
@@ -475,54 +478,65 @@ methods
         p = obj.params;
 
         if isempty(obj.reader)
-            error('HoloDopplerClass:VideoRendering:noFile', 'No file loaded');
+            error('HoloDopplerClass:VideoRendering:noFile', 'No file loaded.');
         end
 
-        first_frame = p.first_frame;
-
-        if isempty(first_frame) || first_frame < 1
+        if isempty(p.first_frame) || ~isfinite(p.first_frame) || p.first_frame < 1
             first_frame = 1;
+        else
+            first_frame = round(p.first_frame);
         end
 
-        end_frame = p.end_frame;
-
-        if isempty(end_frame) || end_frame <= 0 || ~isfinite(end_frame)
+        if isempty(p.end_frame) || p.end_frame <= 0 || ~isfinite(p.end_frame)
             end_frame = obj.file.num_frames;
         else
-            end_frame = min(end_frame, obj.file.num_frames);
+            end_frame = min(round(p.end_frame), obj.file.num_frames);
         end
 
-        num_batches = floor((end_frame - first_frame + 1) / p.batchStride);
-
-        if num_batches * p.batchStride + p.batchSize > end_frame
-            num_batches = num_batches - 1;
+        if first_frame > end_frame
+            error('HoloDopplerClass:VideoRendering:invalidFrameRange', ...
+                'first_frame (%d) must not exceed end_frame (%d).', ...
+                first_frame, end_frame);
         end
+
+        if p.batchSize < 1 || p.batchStride < 1
+            error('HoloDopplerClass:VideoRendering:invalidBatchParameters', ...
+            'batchSize and batchStride must both be positive.');
+        end
+
+        availableFrames = end_frame - first_frame + 1;
+        num_batches = floor((availableFrames - p.batchSize) / p.batchStride) + 1;
 
         if num_batches <= 0
-            fprintf('No batches to process.\n');
+            fprintf('No complete batch: %d frames available, batchSize=%d.\n', ...
+                availableFrames, p.batchSize);
+            result_folder_path = '';
             return
         end
+
+        lastFrameUsed = first_frame + (num_batches - 1) * p.batchStride + p.batchSize - 1;
 
         fprintf("==============================\n");
         fprintf("Starting Video Rendering\n");
         fprintf("File: %s\n", obj.file.path);
-        fprintf("Rendering %d frames, %d batches\n", ...
-            num_batches * p.batchStride, num_batches);
+        fprintf("Requested frames: %d to %d\n", first_frame, end_frame);
+        fprintf("Frames effectively read: %d to %d\n", first_frame, lastFrameUsed);
+        fprintf("Batch size: %d | stride: %d | batches: %d\n", ...
+            p.batchSize, p.batchStride, num_batches);
         fprintf("==============================\n");
 
-        % Precompute spatial kernel using file metadata.
-        kernel = single(generate_spatial_kernel( ...
-            obj.file.Nx, obj.file.Ny, ...
-            p.spatialTransform, p.spatialPropagation, ...
-            obj.file.lambda, obj.file.ppx, obj.file.ppy));
+        % Kernel is precomputed at the SAME padded size RenderingClass uses.
+        kernel = generate_spatial_kernel(obj.file.Nx, obj.file.Ny, p.PaddingNum, ...
+            p.spatialTransform, p.spatialPropagation, obj.file.lambda, ...
+            obj.file.ppx, obj.file.ppy);
 
-        % Pool setup.
         if p.parforArg > 0
             cluster = parcluster;
             maxWorkers = cluster.NumWorkers;
 
             if p.parforArg > maxWorkers
-                warning('Using max workers %d instead of %d', ...
+                warning('HoloDopplerClass:VideoRendering:maxWorkers', ...
+                    'Using max workers %d instead of requested %d.', ...
                     maxWorkers, p.parforArg);
                 p.parforArg = maxWorkers;
             end
@@ -532,20 +546,26 @@ methods
             end
 
             obj.poolManager.acquire();
-            cleanupPool = onCleanup(@() obj.poolManager.release());
+            cleanupPool = onCleanup(@() obj.poolManager.release()); %#ok<NASGU>
             numWorkers = obj.poolManager.Pool.NumWorkers;
         else
             numWorkers = 0;
         end
 
-        fprintf("Using %d workers.\n", numWorkers);
+        fprintf("Using %d worker(s).\n", numWorkers);
 
-        WAITBAR_STEP = 1;
-        h = waitbar(0, 'Initializing...');
+        h = waitbar(0, 'Initializing video rendering...');
+        closeWaitbar = onCleanup(@() closeWaitbarSafe(h)); %#ok<NASGU>
+
         progress = 0;
+        WAITBAR_STEP = max(1, floor(num_batches / 100));
 
         function update_waitbar(increment)
             progress = progress + increment;
+
+            if ~isgraphics(h)
+                return
+            end
 
             if mod(progress, WAITBAR_STEP) == 0 || progress == num_batches
                 waitbar(progress / num_batches, h, ...
@@ -556,7 +576,6 @@ methods
 
         end
 
-        % Build the combined param struct once for workers.
         renderParams = obj.buildRenderParams();
 
         batchResults = cell(1, num_batches);
@@ -565,39 +584,46 @@ methods
         if numWorkers == 0
 
             for i = 1:num_batches
-                batchResults{i} = processBatch(obj, i, first_frame, renderParams, kernel);
+                batchResults{i} = processBatch( ...
+                    obj, i, first_frame, renderParams, kernel);
+
                 update_waitbar(1);
             end
 
         else
+
             cKernel = parallel.pool.Constant(kernel);
             D = parallel.pool.DataQueue;
-            afterEach(D, @(x) update_waitbar(x));
+            afterEach(D, @(~) update_waitbar(1));
 
             parfor i = 1:num_batches
-                batchResults{i} = processBatch(obj, i, first_frame, renderParams, cKernel.Value);
+                batchResults{i} = processBatch( ...
+                    obj, i, first_frame, renderParams, cKernel.Value);
+
                 send(D, 1);
             end
 
         end
 
-        close(h);
         fprintf('Rendering took %.2f s\n', toc(tRendering));
 
-        % Assemble results into ImageTypeList array.
         obj.video = ImageTypeList.empty(num_batches, 0);
 
         for i = 1:num_batches
             obj.video(i) = ImageTypeList();
+
             flds = fieldnames(batchResults{i});
 
             for f = 1:numel(flds)
-                obj.video(i).(flds{f}).image = batchResults{i}.(flds{f});
+                imageType = flds{f};
+                slot = batchResults{i}.(imageType);
+
+                obj.video(i).(imageType).image = slot.image;
+                obj.video(i).(imageType).parameters = slot.parameters;
             end
 
         end
 
-        % Registration.
         if p.imageRegistration && any(strcmp(p.imageTypes, 'power_Doppler'))
             obj.CalculateRegistration();
             obj.ApplyRegistration();
@@ -619,8 +645,12 @@ methods
         outImages = struct();
 
         for j = 1:numel(renderParams.imageTypes)
-            outImages.(renderParams.imageTypes{j}) = ...
-                lr.Output.(renderParams.imageTypes{j}).image;
+            type = renderParams.imageTypes{j};
+            output = lr.Output.(type);
+
+            outImages.(type) = struct( ...
+                'image', output.image, ...
+                'parameters', output.parameters);
         end
 
     end
@@ -630,45 +660,83 @@ methods
 
         if isempty(obj.video)
             error('HoloDopplerClass:CalculateRegistration:noVideo', ...
-            'No video rendered')
+            'No video rendered.');
+        end
+
+        if isempty(obj.video(1).power_Doppler.image)
+            error('HoloDopplerClass:CalculateRegistration:noPowerDoppler', ...
+            'power_Doppler images are required for registration.');
         end
 
         num_batches = numel(obj.video);
         obj.registration = struct('shifts', [], 'rotation', [], 'scale', []);
 
-        video_M0 = zeros(obj.file.Ny, obj.file.Nx, 1, num_batches);
+        firstImage = single(obj.video(1).power_Doppler.image);
+        [numY, numX] = size(firstImage);
+
+        video_M0 = zeros(numY, numX, 1, num_batches, 'single');
 
         for i = 1:num_batches
+            image = obj.video(i).power_Doppler.image;
 
-            if ~isempty(obj.video(i).power_Doppler.image)
-                video_M0(:, :, 1, i) = obj.video(i).power_Doppler.image;
+            if isempty(image)
+                error('HoloDopplerClass:CalculateRegistration:emptyFrame', ...
+                    'power_Doppler image is empty for batch %d.', i);
             end
 
-        end
+            if ~isequal(size(image), [numY numX])
+                error('HoloDopplerClass:CalculateRegistration:inconsistentSize', ...
+                    'power_Doppler size differs at batch %d.', i);
+            end
 
-        numY = size(video_M0, 1);
-        numX = size(video_M0, 2);
+            video_M0(:, :, 1, i) = single(image);
+        end
 
         if obj.params.registrationDiskRatio > 0
             disk = diskMask(numY, numX, obj.params.registrationDiskRatio);
-            if size(disk, 1) ~= numY, disk = disk'; end
+            if ~isequal(size(disk), [numY numX]), disk = disk'; end
         else
-            disk = ones([numY, numX]);
+            disk = ones(numY, numX, 'single');
         end
 
-        video_M0_reg = video_M0 .* disk - disk .* ...
-            sum(video_M0 .* disk, [1, 2]) / nnz(disk);
-        video_M0_reg = video_M0_reg ./ max(abs(video_M0_reg), [], [1, 2]);
+        disk = single(disk);
+        maskCount = nnz(disk);
+
+        if maskCount == 0
+            error('HoloDopplerClass:CalculateRegistration:emptyMask', ...
+            'registrationDiskRatio generated an empty mask.');
+        end
+
+        video_M0_reg = video_M0 .* disk ...
+            - disk .* sum(video_M0 .* disk, [1 2]) / maskCount;
+
+        scale = max(abs(video_M0_reg), [], [1 2]);
+        scale(~isfinite(scale) | scale == 0) = 1;
+
+        video_M0_reg = video_M0_reg ./ scale;
 
         renderParams = obj.buildRenderParams();
         obj.render.setFrames(obj.reader.read_frame_batch( ...
             obj.params.refBatchSize, obj.params.framePosition));
         obj.render.Render(renderParams, obj.params.imageTypes);
-        ref_img = obj.render.Output.power_Doppler.image;
+        ref_img = single(obj.render.Output.power_Doppler.image);
 
-        ref_img = ref_img .* disk - disk .* ...
-            sum(ref_img .* disk, [1, 2]) / nnz(disk);
-        ref_img = ref_img ./ max(abs(ref_img(:)));
+        if ~isequal(size(ref_img), [numY numX])
+            error('HoloDopplerClass:CalculateRegistration:referenceSize', ...
+            'Reference image size does not match the rendered video size.');
+        end
+
+        ref_img = ref_img .* disk ...
+            - disk .* sum(ref_img .* disk, [1 2]) / maskCount;
+
+        refScale = max(abs(ref_img(:)));
+
+        if ~isfinite(refScale) || refScale == 0
+            error('HoloDopplerClass:CalculateRegistration:invalidReference', ...
+            'Reference image has zero or non-finite contrast inside registration mask.');
+        end
+
+        ref_img = ref_img ./ refScale;
 
         [~, obj.registration.shifts] = ...
             register_video_from_reference(video_M0_reg, ref_img);
@@ -685,7 +753,7 @@ methods
         VideoSavingTime = tic;
         disp('Saving video...');
         h = waitbar(0, 'Saving video...');
-        N = double(numel(imageTypes) - 1);
+        N = max(double(numel(imageTypes)), 1);
 
         baseOutputDir = fullfile(obj.file.dir, obj.file.name);
         if ~isfolder(baseOutputDir), mkdir(baseOutputDir); end
@@ -702,11 +770,14 @@ methods
         generateParametersJson(params, obj.file, result_folder_path)
 
         config = getConfigs();
+        [~, output_dirname] = fileparts(result_folder_path);
+        output_filename_h5 = sprintf('%s_output.h5', output_dirname);
+        h5path = fullfile(result_folder_path, 'h5', output_filename_h5);
 
         for i = 1:numel(imageTypes)
             tmp = {obj.video.(imageTypes{i})};
             waitbar((i - 1) / N, h, ...
-                sprintf("Saving %s", strrep(imageTypes{i}, '_', ' ')))
+                sprintf("Saving %s", strrep(imageTypes{i}, '_', ' ')));
 
             if strcmp(imageTypes{i}, 'SH')
                 sz = size(tmp{1}.parameters.SH);
@@ -717,6 +788,25 @@ methods
                 for j = 1:length(tmp)
                     mat(:, :, (j - 1) * bs + 1:j * bs) = tmp{j}.parameters.SH;
                 end
+
+                [~, output_dirname] = fileparts(result_folder_path);
+                output_filename_h5 = sprintf('%s_output.h5', output_dirname);
+                h5path = fullfile(result_folder_path, 'h5', output_filename_h5);
+
+                export_h5_video(h5path, "SH_power", single(mat));
+
+                export_h5_string(h5path, "SH_axis_convention", ...
+                "SH_power(y, x, frequency_bin); frequency_bin is FFT bin within each batch");
+
+                export_h5_string(h5path, "SH_processing", jsonencode(struct( ...
+                    'fs_kHz', obj.file.fs, ...
+                    'batchSize', params.batchSize, ...
+                    'batchStride', params.batchStride, ...
+                    'spatialPropagation_m', params.spatialPropagation, ...
+                    'spatialTransform', params.spatialTransform, ...
+                    'SVD_enabled', params.svd_filter, ...
+                    'SVD_threshold', params.svdThreshold, ...
+                    'registration_enabled', params.imageRegistration)));
 
                 continue
 
@@ -740,6 +830,11 @@ methods
                     end
 
                 end
+
+                export_h5_video(h5path, "bucket_intervals_0", single(mat0));
+                export_h5_video(h5path, "bucket_intervals_1", single(mat1));
+                export_h5_video(h5path, "bucket_intervals_2", single(mat2));
+                export_h5_video(h5path, "bucket_M0", single(mat_0));
 
                 continue
 
@@ -765,7 +860,15 @@ methods
                 continue
 
             elseif strcmp(imageTypes{i}, 'SH_avg')
-                mat = [];
+                first = tmp{1}.parameters.SH;
+                mat = zeros(size(first, 1), size(first, 2), 1, length(tmp), 'single');
+
+                for j = 1:length(tmp)
+                    mat(:, :, 1, j) = tmp{j}.parameters.SH;
+                end
+
+                export_h5_video(h5path, "SH_avg", mat);
+                continue
 
             else
                 sz = size(tmp{1}.image);
@@ -783,7 +886,7 @@ methods
 
             end
 
-            if all(size(size(mat)) == [1 3])
+            if ndims(mat) == 3
                 mat = repmat(mat, [1 1 1 2]);
             end
 
@@ -805,6 +908,7 @@ methods
 
         end
 
+        waitbar(1, h, 'Saving complete');
         close(h);
 
         % ---- Registration ------------------------------------------------
@@ -877,100 +981,94 @@ methods
     end
 
     % =====================================================================
+    % =====================================================================
     function ApplyRegistration(obj)
+
+        if isempty(obj.registration) || isempty(obj.registration.shifts)
+            error('HoloDopplerClass:ApplyRegistration:noShifts', ...
+            'CalculateRegistration must run before ApplyRegistration.');
+        end
+
         num_batches = numel(obj.video);
+        pdImage = obj.video(1).power_Doppler.image;
 
         for j = 1:length(obj.params.imageTypes)
 
             itype = obj.params.imageTypes{j};
 
-            if ismember(itype, {'broadening', 'fRMS', 'FH_modulus_mean', 'FH_arg_mean', 'SVD_cov', 'SVD_U'})
-                continue
-            end
+            if ismember(itype, {'broadening', 'fRMS', 'FH_modulus_mean', ...
+                                    'FH_arg_mean', 'SVD_cov', 'SVD_U'})
+            continue
+        end
 
-            pdImage = obj.video(1).('power_Doppler').image;
-
-            if strcmp(itype, 'SH')
-                sz = size(obj.video(1).SH.parameters.SH);
-                bs = sz(3);
-                ratio = [sz(1) sz(2)] ./ size(pdImage);
-
-                for i = 1:num_batches
-
-                    for m = 1:bs
-                        obj.video(i).('SH').parameters.SH(:, :, m) = ...
-                            circshift( ...
-                            obj.video(i).('SH').parameters.SH(:, :, m), ...
-                            floor(obj.registration.shifts(:, i) .* ratio'));
-                    end
-
-                end
-
-                continue
-
-            elseif strcmp(itype, 'buckets')
-                sz = size(obj.video(1).buckets.parameters.intervals_0);
-
-                if numel(sz) > 3
-                    numF = sz(4);
-                else
-                    numF = 1;
-                end
-
-                ratio = [sz(1) sz(2)] ./ size(pdImage);
-
-                for i = 1:num_batches
-
-                    for k = 1:numF
-                        shift = floor(obj.registration.shifts(:, i) .* ratio');
-                        obj.video(i).('buckets').parameters.intervals_0(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_0(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.intervals_1(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_1(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.intervals_2(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_2(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.M0(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.M0(:, :, :, k), shift);
-                    end
-
-                end
-
-                continue
-
-            elseif strcmp(itype, 'full_buckets')
-                sz = size(obj.video(1).full_buckets.parameters.SH_full);
-                ratio = [sz(1) sz(2)] ./ size(pdImage);
-
-                for i = 1:num_batches
-
-                    for k = 1:sz(3)
-                        obj.video(i).('full_buckets').parameters.SH_full(:, :, k) = ...
-                            circshift( ...
-                            obj.video(i).('full_buckets').parameters.SH_full(:, :, k), ...
-                            floor(obj.registration.shifts(:, i) .* ratio'));
-                    end
-
-                end
-
-                continue
-            end
-
-            try
-                ratio = [size(obj.video(1).(itype).image, 1) ...
-                             size(obj.video(1).(itype).image, 2)] ./ size(pdImage);
-            catch
-                ratio = [1 1];
-            end
+        if strcmp(itype, 'SH')
 
             for i = 1:num_batches
-                obj.video(i).(itype).image = circshift( ...
-                    obj.video(i).(itype).image, ...
-                    floor(obj.registration.shifts(:, i) .* ratio'));
+                data = obj.video(i).SH.parameters.SH;
+
+                if isempty(data), continue; end
+
+                shift = scaledShift( ...
+                    obj.registration.shifts(:, i), size(data), size(pdImage));
+
+                obj.video(i).SH.parameters.SH = translateNoWrap(data, shift);
             end
 
+            continue
+
+        elseif strcmp(itype, 'buckets')
+
+            fields = {'intervals_0', 'intervals_1', 'intervals_2', 'M0'};
+
+            for i = 1:num_batches
+
+                for q = 1:numel(fields)
+                    data = obj.video(i).buckets.parameters.(fields{q});
+
+                    if isempty(data), continue; end
+
+                    shift = scaledShift( ...
+                        obj.registration.shifts(:, i), size(data), size(pdImage));
+
+                    obj.video(i).buckets.parameters.(fields{q}) = ...
+                        translateNoWrap(data, shift);
+                end
+
+            end
+
+            continue
+
+        elseif strcmp(itype, 'full_buckets')
+
+            for i = 1:num_batches
+                data = obj.video(i).full_buckets.parameters.SH_full;
+
+                if isempty(data), continue; end
+
+                shift = scaledShift( ...
+                    obj.registration.shifts(:, i), size(data), size(pdImage));
+
+                obj.video(i).full_buckets.parameters.SH_full = ...
+                    translateNoWrap(data, shift);
+            end
+
+            continue
+        end
+
+        for i = 1:num_batches
+            data = obj.video(i).(itype).image;
+
+            if isempty(data), continue; end
+
+            shift = scaledShift( ...
+                obj.registration.shifts(:, i), size(data), size(pdImage));
+
+            obj.video(i).(itype).image = translateNoWrap(data, shift);
         end
 
     end
+
+end
 
 end % public methods
 
@@ -978,20 +1076,20 @@ end % public methods
 methods (Access = private)
 
     function rp = buildRenderParams(obj)
-        % Merge rendering params with the file-bound metadata that
-        % RenderingClass needs (lambda, ppx, ppy, fs, Nx, Ny).
-        % This is the ONE place where HD.file values are injected into a
-        % params struct passed to the renderer — they are never stored
-        % back into HD.params.
-        rp = obj.params;
-        rp.lambda = obj.file.lambda;
-        rp.ppx = obj.file.ppx;
-        rp.ppy = obj.file.ppy;
-        rp.fs = obj.file.fs;
-        rp.Nx = obj.file.Nx;
-        rp.Ny = obj.file.Ny;
-        rp.num_frames = obj.file.num_frames;
-    end
+    % Merge rendering params with the file-bound metadata that
+    % RenderingClass needs (lambda, ppx, ppy, fs, Nx, Ny).
+    % This is the ONE place where HD.file values are injected into a
+    % params struct passed to the renderer — they are never stored
+    % back into HD.params.
+    rp = obj.params;
+    rp.lambda = obj.file.lambda;
+    rp.ppx = obj.file.ppx;
+    rp.ppy = obj.file.ppy;
+    rp.fs = obj.file.fs;
+    rp.Nx = obj.file.Nx;
+    rp.Ny = obj.file.Ny;
+    rp.num_frames = obj.file.num_frames;
+end
 
 end % private methods
 
@@ -1001,16 +1099,115 @@ end % classdef
 % Module-level helpers
 % =========================================================================
 
-function spatialKernel = generate_spatial_kernel(Nx, Ny, transformation, z, lambda, ppx, ppy)
+function spatialKernel = generate_spatial_kernel( ...
+    Nx, Ny, paddingNum, transformation, z, lambda, ppx, ppy)
+% GENERATE_SPATIAL_KERNEL Precompute a kernel consistent with RenderingClass.
+%
+% Input frame convention: Frames(Nx, Ny, Nt).
+% PaddingNum is interpreted as a minimum size PER AXIS (not a forced
+% square domain):
+%   NxP = max(Nx, PaddingNum)
+%   NyP = max(Ny, PaddingNum)
 
-switch transformation
-    case 'Fresnel'
-        [spatialKernel, ~] = propagation_kernelFresnel(Nx, Ny, z, lambda, ppx, ppy, 0);
-    case 'angular spectrum'
-        Nd = max(Nx, Ny);
-        spatialKernel = propagation_kernelAngularSpectrum(Nd, Nd, z, lambda, ppx, ppy, 0);
+transform = lower(strtrim(string(transformation)));
+
+if isempty(paddingNum) || ~isfinite(paddingNum)
+    paddingNum = 0;
+end
+
+paddingNum = round(double(paddingNum));
+
+if paddingNum < 0
+    error('HoloDopplerClass:generateSpatialKernel:invalidPadding', ...
+    'PaddingNum must be non-negative.');
+end
+
+NxP = max(double(Nx), paddingNum);
+NyP = max(double(Ny), paddingNum);
+
+switch transform
+    case "angular spectrum"
+        spatialKernel = propagation_kernelAngularSpectrum( ...
+            NxP, NyP, z, lambda, ppx, ppy, false);
+
+    case "fresnel"
+        % Historical Fresnel kernel API order: Ny then Nx.
+        [spatialKernel, ~] = propagation_kernelFresnel( ...
+            NyP, NxP, z, lambda, ppx, ppy, false);
+
+    case {"none", "twin image removal"}
+        spatialKernel = single.empty;
+
     otherwise
-        error('Unknown spatial transformation: %s', transformation);
+        error('HoloDopplerClass:generateSpatialKernel:unknownTransform', ...
+            'Unknown spatial transformation "%s".', string(transformation));
+end
+
+spatialKernel = single(spatialKernel);
+end
+
+function shift = scaledShift(baseShift, dataSize, referenceSize)
+% SCALEDSHIFT Rescale a [row; col] shift computed at power_Doppler
+% resolution to the spatial resolution of another array (e.g. SH bins,
+% buckets, or a smaller/larger export).
+
+if numel(dataSize) < 2 || numel(referenceSize) < 2
+    error('HoloDopplerClass:scaledShift:invalidSize', ...
+    'Both sizes must have at least two spatial dimensions.');
+end
+
+ratio = double(dataSize(1:2)) ./ double(referenceSize(1:2));
+shift = round(double(baseShift(:)) .* ratio(:));
+end
+
+function out = translateNoWrap(in, shift)
+% TRANSLATENOWRAP Integer translation with zero-filled exposed borders.
+%
+% Unlike circshift, no pixel wraps around to the opposite border.
+% shift is [shiftRow shiftCol] in MATLAB matrix coordinates.
+
+shift = round(double(shift(:)'));
+
+if numel(shift) ~= 2
+    error('HoloDopplerClass:translateNoWrap:invalidShift', ...
+    'Shift must contain exactly [row col].');
+end
+
+shiftY = shift(1);
+shiftX = shift(2);
+
+numY = size(in, 1);
+numX = size(in, 2);
+
+out = zeros(size(in), 'like', in);
+
+srcY = max(1, 1 - shiftY):min(numY, numY - shiftY);
+srcX = max(1, 1 - shiftX):min(numX, numX - shiftX);
+
+if isempty(srcY) || isempty(srcX)
+    return
+end
+
+dstY = srcY + shiftY;
+dstX = srcX + shiftX;
+
+index = repmat({':'}, 1, ndims(in));
+
+sourceIndex = index;
+sourceIndex{1} = srcY;
+sourceIndex{2} = srcX;
+
+destinationIndex = index;
+destinationIndex{1} = dstY;
+destinationIndex{2} = dstX;
+
+out(destinationIndex{:}) = in(sourceIndex{:});
+end
+
+function closeWaitbarSafe(h)
+
+if ~isempty(h) && isgraphics(h)
+    close(h);
 end
 
 end
