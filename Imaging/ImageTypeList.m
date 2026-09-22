@@ -45,7 +45,6 @@ properties
     band_ratio
     color_band_ratio
     entropy
-    negentropy
 
     % --- Frequency buckets ----------------------------------------------
     buckets
@@ -54,7 +53,6 @@ properties
     % High and low frequency images
     HF_M0
     LF_M0
-    Sum_Image
 end
 
 % -----------------------------------------------------------------------
@@ -80,8 +78,21 @@ methods
         obj.f_RMS = ImageType('f_RMS');
 
         % Raw field
-        obj.SH = ImageType('SH', struct('vector', [], 'SH', []));
-        obj.SH_avg = ImageType('SH_avg', struct('SH', []));
+        obj.SH = ImageType('SH', struct( ...
+            'vector', [], ...
+            'SH', [], ...
+            'spatial_binning', [], ...
+            'original_size', [], ...
+            'binned_size', [], ...
+            'crop_size', [], ...
+            'reduction', []));
+        obj.SH_avg = ImageType('SH_avg', struct( ...
+            'SH', [], ...
+            'spatial_binning', [], ...
+            'original_size', [], ...
+            'binned_size', [], ...
+            'crop_size', [], ...
+            'reduction', []));
         obj.FH_modulus_mean = ImageType('FH_modulus_mean');
         obj.FH_arg_mean = ImageType('FH_arg_mean');
 
@@ -94,7 +105,6 @@ methods
         obj.band_ratio = ImageType('energy_ratio');
         obj.color_band_ratio = ImageType('color_energy_ratio');
         obj.entropy = ImageType('entropy');
-        obj.negentropy = ImageType('negentropy');
 
         % Buckets
         obj.buckets = ImageType('buckets', struct('intervals_0', [], 'intervals_1', [], ...
@@ -104,7 +114,6 @@ methods
         % High and low frequency images
         obj.HF_M0 = ImageType('HF_M0'); % .raw
         obj.LF_M0 = ImageType('LF_M0'); % .raw
-        obj.Sum_Image = ImageType('Sum_Image');
     end
 
     % ------------------------------------------------------------------
@@ -130,7 +139,8 @@ methods
             return % caller wants nothing selected
         end
 
-        if isscalar(varargin) && isequal(varargin{1}, 'all')
+        if numel(varargin) == 1 && ...
+                strcmpi(string(varargin{1}), "all")
             allFields = fieldnames(obj);
 
             for k = 1:numel(allFields)
@@ -201,7 +211,9 @@ methods
             largeMask = repmat(outsideMask, [1 1 batchSize]);
             SH_outside = SH_mod;
             SH_outside(~largeMask) = NaN;
-            SH_mod = SH_mod ./ mean(SH_outside, [1 2], 'omitnan');
+            cornerMean = mean(SH_outside, [1 2], 'omitnan');
+            cornerMean(~isfinite(cornerMean) | cornerMean <= 0) = 1;
+            SH_mod = SH_mod ./ cornerMean;
         end
 
         % --- Power Doppler variants ------------------------------------
@@ -246,13 +258,75 @@ methods
         end
 
         % --- Raw SH output ---------------------------------------------
-        if obj.SH.is_selected
-            obj.SH.parameters.SH = SH_mod; % full-res, no binning
-            obj.SH.parameters.vector = zeros(1, batchSize);
+        % Derived images remain full resolution. Only SH and SH_avg are
+        % spatially block-averaged before storage/export. The frequency
+        % dimension is not modified.
+        if obj.SH.is_selected || obj.SH_avg.is_selected
+            binning = 16;
+
+            if isfield(Params, 'SHSpatialBinning') && ...
+                    ~isempty(Params.SHSpatialBinning)
+                binning = Params.SHSpatialBinning;
+            end
+
+            [SH_binned, binInfo] = obj.spatialBinPower( ...
+                SH_mod, binning);
+
+            if obj.SH.is_selected
+                obj.SH.parameters.SH = SH_binned;
+                obj.SH.parameters.vector = fftfreq( ...
+                    batchSize, 1 / fs);
+                obj.SH.parameters = obj.attachBinningInfo( ...
+                    obj.SH.parameters, binInfo);
+            end
+
+            if obj.SH_avg.is_selected
+                obj.SH_avg.parameters.SH = mean( ...
+                    SH_binned, 3, 'omitnan');
+                obj.SH_avg.parameters = obj.attachBinningInfo( ...
+                    obj.SH_avg.parameters, binInfo);
+            end
+
         end
 
-        if obj.SH_avg.is_selected
-            obj.SH_avg.parameters.SH = mean(SH_mod, 3);
+        if obj.SH.is_selected
+            [SH_binned, binInfo] = obj.spatialBinPower( ...
+                SH_mod, Params.SHSpatialBinning);
+
+            obj.SH.parameters.SH = SH_binned;
+            obj.SH.parameters.vector = fftfreq( ...
+                batchSize, 1 / fs);
+
+            obj.SH.parameters.spatial_binning = ...
+                binInfo.spatial_binning;
+
+            obj.SH.parameters.original_size = ...
+                binInfo.original_size;
+
+            obj.SH.parameters.crop_size = ...
+                binInfo.crop_size;
+
+            obj.SH.parameters.binned_size = ...
+                binInfo.binned_size;
+
+            obj.SH.parameters.reduction = ...
+                binInfo.reduction;
+
+            % Aperçu 2D : moyenne dans la bande Doppler utile
+            frequencyVector = obj.SH.parameters.vector;
+
+            spectralMask = abs(frequencyVector) >= f1 ...
+                & abs(frequencyVector) <= f2;
+
+            if any(spectralMask)
+                obj.SH.image = mean( ...
+                    SH_binned(:, :, spectralMask), ...
+                    3, "omitnan");
+            else
+                obj.SH.image = mean( ...
+                    SH_binned, 3, "omitnan");
+            end
+
         end
 
         % --- Spectral moments ------------------------------------------
@@ -275,7 +349,9 @@ methods
         if obj.f_RMS.is_selected
             M0 = moment0(SH_mod, f1, f2, fs, batchSize);
             M2 = moment2(SH_mod, f1, f2, fs, batchSize);
-            obj.f_RMS.image = sqrt(M2 ./ mean(M0, [1, 2]));
+            denominator = M0;
+            denominator(~isfinite(denominator) | denominator <= 0) = NaN;
+            obj.f_RMS.image = sqrt(M2 ./ denominator);
         end
 
         if obj.HF_M0.is_selected
@@ -284,11 +360,6 @@ methods
 
         if obj.LF_M0.is_selected
             obj.LF_M0.image = moment0(SH_mod, fr1, fr2, fs, batchSize);
-        end
-
-        if obj.Sum_Image.is_selected
-            obj.Sum_Image.image = energy_ratio(SH_mod, fr1, f2, fr2, fr2, fs, batchSize) + ...
-                moment0(SH_mod, f1, f2, fs, batchSize);
         end
 
         % --- Spectral statistics ---------------------------------------
@@ -306,10 +377,6 @@ methods
 
         if obj.entropy.is_selected
             obj.entropy.image = spectral_entropy(SH_mod, f1, f2, fs, batchSize);
-        end
-
-        if obj.negentropy.is_selected
-            obj.negentropy.image = spectral_negentropy(SH_mod, f1, f2, fs, batchSize);
         end
 
         % --- Frequency buckets -----------------------------------------
@@ -400,6 +467,74 @@ methods (Access = private)
     end
 
     % ------------------------------------------------------------------
+    function [out, info] = spatialBinPower(~, in, factor)
+        % Average non-overlapping factor-by-factor spatial blocks.
+        % SH_mod is a power spectrum, so a block mean preserves the power
+        % scale; a block sum would multiply it by factor^2.
+
+        validateattributes(factor, {'numeric'}, ...
+            {'scalar', 'real', 'finite', 'integer', 'positive'}, ...
+            mfilename, 'Params.SHSpatialBinning');
+        factor = double(factor);
+
+        originalSize = size(in);
+        nRows = originalSize(1);
+        nCols = originalSize(2);
+        nFreq = originalSize(3);
+
+        if factor == 1
+            out = in;
+            cropSize = [nRows nCols];
+        else
+            nRowsOut = floor(nRows / factor);
+            nColsOut = floor(nCols / factor);
+
+            if nRowsOut < 1 || nColsOut < 1
+                error('ImageTypeList:SHBinningTooLarge', ...
+                    ['SHSpatialBinning=%d exceeds the SH spatial ', ...
+                 'size [%d %d].'], factor, nRows, nCols);
+            end
+
+            % Retain complete blocks only. This avoids unequal block areas
+            % when a dimension is not divisible by the binning factor.
+            cropSize = [nRowsOut * factor, nColsOut * factor];
+            work = in(1:cropSize(1), 1:cropSize(2), :);
+            work = reshape(work, ...
+                factor, nRowsOut, factor, nColsOut, nFreq);
+
+            valid = isfinite(work);
+            work(~valid) = 0;
+            numerator = sum(sum(work, 1), 3);
+            denominator = sum(sum(valid, 1), 3);
+            numerator = reshape(permute(numerator, ...
+                [2 4 5 1 3]), nRowsOut, nColsOut, nFreq);
+            denominator = reshape(permute(denominator, ...
+                [2 4 5 1 3]), nRowsOut, nColsOut, nFreq);
+
+            out = numerator ./ denominator;
+            out(denominator == 0) = NaN;
+            out = cast(out, 'like', in);
+        end
+
+        info = struct( ...
+            'spatial_binning', [factor factor], ...
+            'original_size', originalSize, ...
+            'binned_size', size(out), ...
+            'crop_size', cropSize, ...
+            'reduction', 'block_mean_power');
+    end
+
+    % ------------------------------------------------------------------
+    function parameters = attachBinningInfo(~, parameters, info)
+        names = fieldnames(info);
+
+        for k = 1:numel(names)
+            parameters.(names{k}) = info.(names{k});
+        end
+
+    end
+
+    % ------------------------------------------------------------------
     function img = renderBroadeningPlot(~, SH_mod, Params, fs)
         % Render the spectral broadening plot into a raster image.
         img = [];
@@ -447,7 +582,7 @@ methods (Access = private)
 
         if buckranges(1, 1) == -1
             % Auto-define 32 equal buckets up to Nyquist
-            edges = linspace(0, fs / 2, 17);
+            edges = linspace(0, fs / 2, 33);
             buckranges = [edges(1:end - 1)', edges(2:end)'];
         end
 
@@ -481,7 +616,9 @@ methods (Access = private)
         for bIdx = 1:nBuckets
             i1 = edges(bIdx);
             i2 = edges(bIdx + 1) - 1;
-            SH_full(:, :, bIdx) = single(log(mean(SH_mod(:, :, i1:i2), 3)));
+            bucketMean = mean(SH_mod(:, :, i1:i2), 3);
+            bucketMean = max(bucketMean, realmin('single'));
+            SH_full(:, :, bIdx) = single(log(bucketMean));
         end
 
         obj.full_buckets.parameters.SH_full = SH_full;

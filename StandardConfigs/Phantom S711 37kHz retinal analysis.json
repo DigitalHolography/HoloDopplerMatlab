@@ -10,8 +10,7 @@
     "band_ratio",
     "broadening",
     "HF_M0",
-    "LF_M0",
-    "Sum_Image"
+    "LF_M0"
   ],
   "imageRegistration": true,
   "spatialTransform": "Fresnel",

@@ -23,6 +23,7 @@ properties
     video % ImageTypeList array (one per batch)
     running_averages
     registration
+    autofocusResult = struct()
     poolManager
 end
 
@@ -609,17 +610,18 @@ methods
 
         obj.video = ImageTypeList.empty(num_batches, 0);
 
-        for i = 1:num_batches
-            obj.video(i) = ImageTypeList();
+        for b = 1:numel(batchResults)
+            obj.video(b) = ImageTypeList();
 
-            flds = fieldnames(batchResults{i});
+            types = fieldnames(batchResults{b});
 
-            for f = 1:numel(flds)
-                imageType = flds{f};
-                slot = batchResults{i}.(imageType);
+            for f = 1:numel(types)
+                type = types{f};
+                result = batchResults{b}.(type);
 
-                obj.video(i).(imageType).image = slot.image;
-                obj.video(i).(imageType).parameters = slot.parameters;
+                obj.video(b).(type).image = result.image;
+                obj.video(b).(type).parameters = result.parameters;
+                obj.video(b).(type).is_selected = true;
             end
 
         end
@@ -660,83 +662,45 @@ methods
 
         if isempty(obj.video)
             error('HoloDopplerClass:CalculateRegistration:noVideo', ...
-            'No video rendered.');
-        end
-
-        if isempty(obj.video(1).power_Doppler.image)
-            error('HoloDopplerClass:CalculateRegistration:noPowerDoppler', ...
-            'power_Doppler images are required for registration.');
+            'No video rendered')
         end
 
         num_batches = numel(obj.video);
         obj.registration = struct('shifts', [], 'rotation', [], 'scale', []);
 
-        firstImage = single(obj.video(1).power_Doppler.image);
-        [numY, numX] = size(firstImage);
-
-        video_M0 = zeros(numY, numX, 1, num_batches, 'single');
+        videoM0 = zeros(obj.file.Ny, obj.file.Nx, 1, num_batches);
 
         for i = 1:num_batches
-            image = obj.video(i).power_Doppler.image;
 
-            if isempty(image)
-                error('HoloDopplerClass:CalculateRegistration:emptyFrame', ...
-                    'power_Doppler image is empty for batch %d.', i);
+            if isempty(obj.video(i).power_Doppler.image)
+                videoM0(:, :, 1, i) = obj.video(i).power_Doppler.image;
             end
 
-            if ~isequal(size(image), [numY numX])
-                error('HoloDopplerClass:CalculateRegistration:inconsistentSize', ...
-                    'power_Doppler size differs at batch %d.', i);
-            end
-
-            video_M0(:, :, 1, i) = single(image);
         end
+
+        numY = size(videoM0, 1);
+        numX = size(videoM0, 2);
 
         if obj.params.registrationDiskRatio > 0
             disk = diskMask(numY, numX, obj.params.registrationDiskRatio);
-            if ~isequal(size(disk), [numY numX]), disk = disk'; end
+            if size(disk, 1) ~= numY, disk = disk'; end
         else
-            disk = ones(numY, numX, 'single');
+            disk = ones([numY, numX]);
         end
 
-        disk = single(disk);
-        maskCount = nnz(disk);
-
-        if maskCount == 0
-            error('HoloDopplerClass:CalculateRegistration:emptyMask', ...
-            'registrationDiskRatio generated an empty mask.');
-        end
-
-        video_M0_reg = video_M0 .* disk ...
-            - disk .* sum(video_M0 .* disk, [1 2]) / maskCount;
-
-        scale = max(abs(video_M0_reg), [], [1 2]);
-        scale(~isfinite(scale) | scale == 0) = 1;
-
-        video_M0_reg = video_M0_reg ./ scale;
+        video_M0_reg = videoM0 .* disk - disk .* ...
+            sum(videoM0 .* disk, [1, 2]) / nnz(disk);
+        video_M0_reg = video_M0_reg ./ max(abs(video_M0_reg), [], [1, 2]);
 
         renderParams = obj.buildRenderParams();
         obj.render.setFrames(obj.reader.read_frame_batch( ...
             obj.params.refBatchSize, obj.params.framePosition));
         obj.render.Render(renderParams, obj.params.imageTypes);
-        ref_img = single(obj.render.Output.power_Doppler.image);
+        ref_img = obj.render.Output.power_Doppler.image;
 
-        if ~isequal(size(ref_img), [numY numX])
-            error('HoloDopplerClass:CalculateRegistration:referenceSize', ...
-            'Reference image size does not match the rendered video size.');
-        end
-
-        ref_img = ref_img .* disk ...
-            - disk .* sum(ref_img .* disk, [1 2]) / maskCount;
-
-        refScale = max(abs(ref_img(:)));
-
-        if ~isfinite(refScale) || refScale == 0
-            error('HoloDopplerClass:CalculateRegistration:invalidReference', ...
-            'Reference image has zero or non-finite contrast inside registration mask.');
-        end
-
-        ref_img = ref_img ./ refScale;
+        ref_img = ref_img .* disk - disk .* ...
+            sum(ref_img .* disk, [1, 2]) / nnz(disk);
+        ref_img = ref_img ./ max(abs(ref_img(:)));
 
         [~, obj.registration.shifts] = ...
             register_video_from_reference(video_M0_reg, ref_img);
@@ -795,9 +759,14 @@ methods
 
                 export_h5_video(h5path, "SH_power", single(mat));
 
+                axisConvention = ...
+                    "SH_power(y_bin, x_bin, frequency_bin); " + ...
+                    "spatial bins are non-overlapping block means; " + ...
+                    "frequency_bin is the FFT bin within each batch";
                 export_h5_string(h5path, "SH_axis_convention", ...
-                "SH_power(y, x, frequency_bin); frequency_bin is FFT bin within each batch");
+                    axisConvention);
 
+                shMeta = tmp{1}.parameters;
                 export_h5_string(h5path, "SH_processing", jsonencode(struct( ...
                     'fs_kHz', obj.file.fs, ...
                     'batchSize', params.batchSize, ...
@@ -806,7 +775,12 @@ methods
                     'spatialTransform', params.spatialTransform, ...
                     'SVD_enabled', params.svd_filter, ...
                     'SVD_threshold', params.svdThreshold, ...
-                    'registration_enabled', params.imageRegistration)));
+                    'registration_enabled', params.imageRegistration, ...
+                    'SH_spatial_binning', shMeta.spatial_binning, ...
+                    'SH_original_size', shMeta.original_size, ...
+                    'SH_binned_size', shMeta.binned_size, ...
+                    'SH_crop_size', shMeta.crop_size, ...
+                    'SH_spatial_reduction', shMeta.reduction)));
 
                 continue
 
@@ -886,7 +860,7 @@ methods
 
             end
 
-            if ndims(mat) == 3
+            if size(mat, 4) == 1
                 mat = repmat(mat, [1 1 1 2]);
             end
 
@@ -981,94 +955,100 @@ methods
     end
 
     % =====================================================================
-    % =====================================================================
     function ApplyRegistration(obj)
-
-        if isempty(obj.registration) || isempty(obj.registration.shifts)
-            error('HoloDopplerClass:ApplyRegistration:noShifts', ...
-            'CalculateRegistration must run before ApplyRegistration.');
-        end
-
         num_batches = numel(obj.video);
-        pdImage = obj.video(1).power_Doppler.image;
 
         for j = 1:length(obj.params.imageTypes)
 
             itype = obj.params.imageTypes{j};
 
-            if ismember(itype, {'broadening', 'fRMS', 'FH_modulus_mean', ...
-                                    'FH_arg_mean', 'SVD_cov', 'SVD_U'})
-            continue
-        end
-
-        if strcmp(itype, 'SH')
-
-            for i = 1:num_batches
-                data = obj.video(i).SH.parameters.SH;
-
-                if isempty(data), continue; end
-
-                shift = scaledShift( ...
-                    obj.registration.shifts(:, i), size(data), size(pdImage));
-
-                obj.video(i).SH.parameters.SH = translateNoWrap(data, shift);
+            if ismember(itype, {'broadening', 'fRMS', 'FH_modulus_mean', 'FH_arg_mean', 'SVD_cov', 'SVD_U'})
+                continue
             end
 
-            continue
+            pdImage = obj.video(1).('power_Doppler').image;
 
-        elseif strcmp(itype, 'buckets')
+            if strcmp(itype, 'SH')
+                sz = size(obj.video(1).SH.parameters.SH);
+                bs = sz(3);
+                ratio = [sz(1) sz(2)] ./ size(pdImage);
 
-            fields = {'intervals_0', 'intervals_1', 'intervals_2', 'M0'};
+                for i = 1:num_batches
 
-            for i = 1:num_batches
+                    for m = 1:bs
+                        obj.video(i).('SH').parameters.SH(:, :, m) = ...
+                            circshift( ...
+                            obj.video(i).('SH').parameters.SH(:, :, m), ...
+                            floor(obj.registration.shifts(:, i) .* ratio'));
+                    end
 
-                for q = 1:numel(fields)
-                    data = obj.video(i).buckets.parameters.(fields{q});
-
-                    if isempty(data), continue; end
-
-                    shift = scaledShift( ...
-                        obj.registration.shifts(:, i), size(data), size(pdImage));
-
-                    obj.video(i).buckets.parameters.(fields{q}) = ...
-                        translateNoWrap(data, shift);
                 end
 
+                continue
+
+            elseif strcmp(itype, 'buckets')
+                sz = size(obj.video(1).buckets.parameters.intervals_0);
+
+                if numel(sz) > 3
+                    numF = sz(4);
+                else
+                    numF = 1;
+                end
+
+                ratio = [sz(1) sz(2)] ./ size(pdImage);
+
+                for i = 1:num_batches
+
+                    for k = 1:numF
+                        shift = floor(obj.registration.shifts(:, i) .* ratio');
+                        obj.video(i).('buckets').parameters.intervals_0(:, :, :, k) = ...
+                            circshift(obj.video(i).('buckets').parameters.intervals_0(:, :, :, k), shift);
+                        obj.video(i).('buckets').parameters.intervals_1(:, :, :, k) = ...
+                            circshift(obj.video(i).('buckets').parameters.intervals_1(:, :, :, k), shift);
+                        obj.video(i).('buckets').parameters.intervals_2(:, :, :, k) = ...
+                            circshift(obj.video(i).('buckets').parameters.intervals_2(:, :, :, k), shift);
+                        obj.video(i).('buckets').parameters.M0(:, :, :, k) = ...
+                            circshift(obj.video(i).('buckets').parameters.M0(:, :, :, k), shift);
+                    end
+
+                end
+
+                continue
+
+            elseif strcmp(itype, 'full_buckets')
+                sz = size(obj.video(1).full_buckets.parameters.SH_full);
+                ratio = [sz(1) sz(2)] ./ size(pdImage);
+
+                for i = 1:num_batches
+
+                    for k = 1:sz(3)
+                        obj.video(i).('full_buckets').parameters.SH_full(:, :, k) = ...
+                            circshift( ...
+                            obj.video(i).('full_buckets').parameters.SH_full(:, :, k), ...
+                            floor(obj.registration.shifts(:, i) .* ratio'));
+                    end
+
+                end
+
+                continue
             end
 
-            continue
-
-        elseif strcmp(itype, 'full_buckets')
+            try
+                ratio = [size(obj.video(1).(itype).image, 1) ...
+                             size(obj.video(1).(itype).image, 2)] ./ size(pdImage);
+            catch
+                ratio = [1 1];
+            end
 
             for i = 1:num_batches
-                data = obj.video(i).full_buckets.parameters.SH_full;
-
-                if isempty(data), continue; end
-
-                shift = scaledShift( ...
-                    obj.registration.shifts(:, i), size(data), size(pdImage));
-
-                obj.video(i).full_buckets.parameters.SH_full = ...
-                    translateNoWrap(data, shift);
+                obj.video(i).(itype).image = circshift( ...
+                    obj.video(i).(itype).image, ...
+                    floor(obj.registration.shifts(:, i) .* ratio'));
             end
 
-            continue
-        end
-
-        for i = 1:num_batches
-            data = obj.video(i).(itype).image;
-
-            if isempty(data), continue; end
-
-            shift = scaledShift( ...
-                obj.registration.shifts(:, i), size(data), size(pdImage));
-
-            obj.video(i).(itype).image = translateNoWrap(data, shift);
         end
 
     end
-
-end
 
 end % public methods
 
@@ -1076,20 +1056,20 @@ end % public methods
 methods (Access = private)
 
     function rp = buildRenderParams(obj)
-    % Merge rendering params with the file-bound metadata that
-    % RenderingClass needs (lambda, ppx, ppy, fs, Nx, Ny).
-    % This is the ONE place where HD.file values are injected into a
-    % params struct passed to the renderer — they are never stored
-    % back into HD.params.
-    rp = obj.params;
-    rp.lambda = obj.file.lambda;
-    rp.ppx = obj.file.ppx;
-    rp.ppy = obj.file.ppy;
-    rp.fs = obj.file.fs;
-    rp.Nx = obj.file.Nx;
-    rp.Ny = obj.file.Ny;
-    rp.num_frames = obj.file.num_frames;
-end
+        % Merge rendering params with the file-bound metadata that
+        % RenderingClass needs (lambda, ppx, ppy, fs, Nx, Ny).
+        % This is the ONE place where HD.file values are injected into a
+        % params struct passed to the renderer — they are never stored
+        % back into HD.params.
+        rp = obj.params;
+        rp.lambda = obj.file.lambda;
+        rp.ppx = obj.file.ppx;
+        rp.ppy = obj.file.ppy;
+        rp.fs = obj.file.fs;
+        rp.Nx = obj.file.Nx;
+        rp.Ny = obj.file.Ny;
+        rp.num_frames = obj.file.num_frames;
+    end
 
 end % private methods
 

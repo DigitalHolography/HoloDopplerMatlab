@@ -1,43 +1,42 @@
-function [energy_ratio] = energy_ratio(SH, f1, f2, fi1, fi2, fs, batchSize)
+function ratio = energy_ratio(SH, f1, f2, fi1, fi2, fs, batchSize)
+%ENERGY_RATIO Ratio of mean high- to low-frequency spectral power.
+%
+% The global support is f1 <= |f| <= f2. The low band contains frequencies
+% below fi1; the high band contains frequencies at or above fi2. Therefore,
+% when fi1 == fi2, their common boundary belongs only to the high band.
 
 arguments
     SH
-    f1
-    f2
-    fi1
-    fi2
-    fs
-    batchSize
+    f1 (1,1) double {mustBeNonnegative}
+    f2 (1,1) double {mustBePositive}
+    fi1 (1,1) double {mustBeNonnegative}
+    fi2 (1,1) double {mustBeNonnegative}
+    fs (1,1) double {mustBePositive}
+    batchSize (1,1) double {mustBeInteger,mustBePositive}
+end
+
+if f2 <= f1
+    error('energy_ratio:InvalidSupport', 'f2 must be greater than f1.');
 end
 
 SH = abs(SH);
-
-% Weights
 f = fftfreq(batchSize, 1 / fs);
-weights = f;
-abs_weights = abs(weights);
-weights(abs_weights > f2) = 0;
-weights(abs_weights < f1) = 0;
+absF = abs(f);
+support = absF >= f1 & absF <= f2;
+lowMask = support & absF < fi1;
+highMask = support & absF >= fi2;
 
-% Low Frequency Weights
-weightsLF = weights;
-weightsLF(abs_weights > fi1) = 0;
-weightsLF(weightsLF ~= 0) = 1;
+if ~any(lowMask)
+    error('energy_ratio:EmptyLowBand', ...
+        'The low-frequency band contains no FFT bin.');
+end
+if ~any(highMask)
+    error('energy_ratio:EmptyHighBand', ...
+        'The high-frequency band contains no FFT bin.');
+end
 
-% High Frequency Weights
-weightsHF = weights;
-weightsHF(abs_weights < fi2) = 0;
-weightsHF(weightsHF ~= 0) = 1;
-
-% Energies
-LF_psd_avg = mean(SH .* reshape(weightsLF, 1, 1, []), 3);
-HF_psd_avg = mean(SH .* reshape(weightsHF, 1, 1, []), 3);
-
-% energy ratio
-energy_ratio = HF_psd_avg ./ LF_psd_avg;
-[Nx, Ny, ~] = size(SH);
-disk = diskMask(Ny, Nx, 1);
-R0 = ~disk .* energy_ratio;
-R0 = mean(R0, "all");
-energy_ratio = energy_ratio - R0;
+PL = mean(SH(:, :, lowMask), 3, 'omitnan');
+PH = mean(SH(:, :, highMask), 3, 'omitnan');
+ratio = PH ./ PL;
+ratio(~isfinite(ratio) | PL <= 0) = NaN;
 end

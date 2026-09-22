@@ -30,7 +30,7 @@ gamma0 = width_est / 4;
 p0 = [A0, mu0, sigma0, gamma0, C0];
 
 lb = [0, min(xf), 0, 0, -Inf];
-ub = [Inf, max(xf), Inf, Inf, Inf];
+ub = [Inf, max(xf), Inf, 1, Inf];
 
 opts = optimoptions('lsqcurvefit', 'Display', 'off');
 

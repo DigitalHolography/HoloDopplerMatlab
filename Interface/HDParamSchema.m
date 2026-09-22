@@ -246,6 +246,8 @@ methods (Static, Access = private)
         % ---- image types ---------------------------------------------
         s(end + 1) = HDParamSchema.entry('imageTypes', 'imageTypesListBox', 'listbox', ...
             {{'power_Doppler', 'moment_0', 'moment_1', 'moment_2', 'HF_M0', 'LF_M0'}});
+        % Block-mean factor used only for SH and SH_avg storage/export.
+        s(end + 1) = HDParamSchema.entry('SHSpatialBinning', '', 'numeric', 16, 1, []);
 
         % ---- registration --------------------------------------------
         s(end + 1) = HDParamSchema.entry('imageRegistration', 'imageRegistration', 'checkbox', true);
@@ -259,6 +261,9 @@ methods (Static, Access = private)
         s(end + 1) = HDParamSchema.entry('spatialFilterRange2', 'spatialFilterRange2', 'numeric', 1, 0, 1);
         s(end + 1) = HDParamSchema.entry('spatialTransform', 'spatialTransform', 'dropdown', 'Fresnel');
         s(end + 1) = HDParamSchema.entry('spatialPropagation', 'spatialPropagation', 'numeric', 0, 0, []);
+        s(end + 1) = HDParamSchema.entry('defocusCorrection', '', 'checkbox', false);
+        s(end + 1) = HDParamSchema.entry('defocusCoefficientRad', '', 'numeric', 0, [], []);
+        s(end + 1) = HDParamSchema.entry('defocusPupilRadius', '', 'numeric', 2, 0, []);
         s(end + 1) = HDParamSchema.entry('PaddingNum', 'PaddingNum', 'numeric', 0, 0, []);
 
         % ---- SVD -----------------------------------------------------
