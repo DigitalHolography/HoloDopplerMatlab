@@ -368,7 +368,7 @@ methods
         end
 
         if obj.band_ratio.is_selected
-            obj.band_ratio.image = energy_ratio(SH_mod, fr1, f2, fr2, fr2, fs, batchSize);
+            obj.band_ratio.image = energy_ratio(SH_mod, f1, f2, fr1, fr2, fs, batchSize);
         end
 
         if obj.color_band_ratio.is_selected
