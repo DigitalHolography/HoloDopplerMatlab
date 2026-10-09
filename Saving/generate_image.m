@@ -5,15 +5,21 @@ png_dir = fullfile(output_path, 'png');
 
 if ~isfolder(png_dir)
     [ok, msg] = mkdir(png_dir);
+
     if ~ok
         error('HoloDoppler:generate_image:CreateDirectoryFailed', ...
             'Cannot create directory "%s": %s', png_dir, msg);
     end
+
 end
 
 [~, folder_name] = fileparts(output_path);
 output_file = fullfile(png_dir, ...
     sprintf('%s_%s.png', folder_name, name));
+
+if isfile(output_file)
+    delete(output_file)
+end
 
 % Average first, then interpolate each channel once.
 avg = double(mean(video, 4));

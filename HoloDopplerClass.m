@@ -583,6 +583,7 @@ classdef HoloDopplerClass < handle
             tRendering = tic;
 
             reader = obj.reader;
+
             if numWorkers == 0
 
                 for i = 1:num_batches
@@ -630,6 +631,26 @@ classdef HoloDopplerClass < handle
             if p.imageRegistration && any(strcmp(p.imageTypes, 'power_Doppler'))
                 obj.CalculateRegistration();
                 obj.ApplyRegistration();
+            end
+
+            % Accumulate on the main process, after registration.
+            obj.running_averages = RunningAveragesHolder();
+
+            if any(strcmp(p.imageTypes, 'SH_avg'))
+
+                for b = 1:numel(obj.video)
+                    SH_PSD = obj.video(b).SH_avg.parameters.SH;
+
+                    if isempty(SH_PSD)
+                        error('HoloDoppler:MissingSHAvgCube', ...
+                            'Batch %d: SH_avg power cube is empty.', b);
+                    end
+
+                    obj.running_averages.update(SH_PSD, b, p);
+                end
+
+                fprintf('SH_avg: %d spectral power cubes averaged.\n', ...
+                    obj.running_averages.numUpdates);
             end
 
             result_folder_path = obj.SaveVideo();
@@ -833,16 +854,20 @@ classdef HoloDopplerClass < handle
                         fullfile(result_folder_path, 'h5', output_filename_h5), ...
                         "SH_Slices", single(mat_));
                     continue
-
                 elseif strcmp(imageTypes{i}, 'SH_avg')
-                    first = tmp{1}.parameters.SH;
-                    mat = zeros(size(first, 1), size(first, 2), 1, length(tmp), 'single');
 
-                    for j = 1:length(tmp)
-                        mat(:, :, 1, j) = tmp{j}.parameters.SH;
+                    if obj.running_averages.numUpdates == 0
+                        error('HoloDoppler:EmptySHAvg', ...
+                            'No spectral power cube was accumulated.');
                     end
 
-                    export_h5_video(h5path, "SH_avg", mat);
+                    mat = obj.running_averages.running_averages.SH;
+
+                    if isa(mat, 'gpuArray')
+                        mat = gather(mat);
+                    end
+
+                    export_h5_video(h5path, "SH_avg", single(mat));
                     continue
 
                 else
@@ -983,6 +1008,28 @@ classdef HoloDopplerClass < handle
                                 floor(obj.registration.shifts(:, i) .* ratio'));
                         end
 
+                    end
+
+                    continue
+
+                elseif strcmp(itype, 'SH_avg')
+
+                    referenceSize = [size(pdImage, 1), size(pdImage, 2)];
+
+                    for i = 1:num_batches
+                        cube = obj.video(i).SH_avg.parameters.SH;
+
+                        if isempty(cube)
+                            error('HoloDoppler:MissingSHAvgCube', ...
+                                'Batch %d: SH_avg power cube is empty.', i);
+                        end
+
+                        shift = scaledShift( ...
+                            obj.registration.shifts(:, i), ...
+                            size(cube), referenceSize);
+
+                        obj.video(i).SH_avg.parameters.SH = ...
+                            translateNoWrap(cube, shift);
                     end
 
                     continue
@@ -1229,29 +1276,45 @@ defaultUnknown = struct('temporalFilter', 2, 'square', true);
 end
 
 function outImages = processBatchFromReader( ...
-                reader, batchIdx, first_frame, renderParams, kernel)
+    reader, batchIdx, first_frame, renderParams, kernel)
 
-            frameIdx = first_frame + ...
-                (batchIdx - 1) * renderParams.batchStride;
+frameIdx = first_frame + ...
+    (batchIdx - 1) * renderParams.batchStride;
 
-            frames = reader.read_frame_batch( ...
-                renderParams.batchSize, frameIdx);
+frames = reader.read_frame_batch( ...
+    renderParams.batchSize, frameIdx);
 
-            lr = RenderingClass('precomputeSpatialKernel', kernel);
-            lr.setFrames(frames);
+lr = RenderingClass('precomputeSpatialKernel', kernel);
+lr.setFrames(frames);
 
-            lr.Render(renderParams, renderParams.imageTypes, ...
-                'cache_intermediate_results', false);
+lr.Render(renderParams, renderParams.imageTypes, ...
+    'cache_intermediate_results', false);
 
-            outImages = struct();
+outImages = struct();
 
-            for j = 1:numel(renderParams.imageTypes)
-                type = renderParams.imageTypes{j};
-                output = lr.Output.(type);
+for j = 1:numel(renderParams.imageTypes)
+    type = renderParams.imageTypes{j};
+    output = lr.Output.(type);
 
-                outImages.(type) = struct( ...
-                    'image', output.image, ...
-                    'parameters', output.parameters);
-            end
+    outImages.(type) = struct( ...
+        'image', output.image, ...
+        'parameters', output.parameters);
+end
 
-        end
+if any(strcmp(renderParams.imageTypes, 'SH_avg'))
+
+    if isempty(lr.SH)
+        error('HoloDoppler:MissingBatchSpectrum', ...
+            'Batch %d: RenderingClass.SH is empty.', batchIdx);
+    end
+
+    SH_PSD = abs(lr.SH) .^ 2;
+
+    if isa(SH_PSD, 'gpuArray')
+        SH_PSD = gather(SH_PSD);
+    end
+
+    outImages.SH_avg.parameters.SH = single(SH_PSD);
+end
+
+end

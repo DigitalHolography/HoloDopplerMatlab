@@ -139,7 +139,7 @@ methods
             return % caller wants nothing selected
         end
 
-        if numel(varargin) == 1 && ...
+        if isscalar(varargin) && ...
                 strcmpi(string(varargin{1}), "all")
             allFields = fieldnames(obj);
 

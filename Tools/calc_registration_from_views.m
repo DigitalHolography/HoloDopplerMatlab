@@ -4,7 +4,12 @@ SH_PSD = [];
 for i = 1:numel(params.imageTypes)
 
     if ismember(params.imageTypes{i}, {'SH_avg'})
+        % view.SH contains the complex temporal Fourier transform.
         SH_PSD = abs(view.SH) .^ 2;
+
+        % The accumulator receives power, never the complex field.
+        obj.running_averages.update(SH_PSD, i, params);
+
         M0 = view.Output.power_Doppler.image;
         M0_ref = view_ref.Output.power_Doppler.image;
         [Ny, Nx] = size(M0);
