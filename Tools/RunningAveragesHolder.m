@@ -37,25 +37,21 @@ methods
             return
         end
 
-        currentMean = obj.running_averages.SH;
+        currentSum = obj.running_averages.SH;
 
-        if ~isequal(size(currentMean), size(SH_PSD))
+        if ~isequal(size(currentSum), size(SH_PSD))
             error('RunningAveragesHolder:SizeMismatch', ...
             'SH_PSD size changed during accumulation.');
         end
 
-        if ~strcmp(class(currentMean), class(SH_PSD)) || ...
-                isa(currentMean, 'gpuArray') ~= isa(SH_PSD, 'gpuArray')
+        if ~strcmp(class(currentSum), class(SH_PSD)) || ...
+                isa(currentSum, 'gpuArray') ~= isa(SH_PSD, 'gpuArray')
             error('RunningAveragesHolder:TypeMismatch', ...
             'SH_PSD type or CPU/GPU location changed.');
         end
 
-        n = obj.numUpdates + 1;
-
-        obj.running_averages.SH = ...
-            currentMean + (SH_PSD - currentMean) ./ n;
-
-        obj.numUpdates = n;
+        obj.running_averages.SH = currentSum + SH_PSD;
+        obj.numUpdates = obj.numUpdates + 1;
     end
 
 end
