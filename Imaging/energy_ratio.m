@@ -1,9 +1,10 @@
-function ratio = energy_ratio(SH, f1, f2, fi1, fi2, fs, batchSize)
-%ENERGY_RATIO Ratio of mean high- to low-frequency spectral values.
+function [ratio, f_c] = energy_ratio(SH, f1, f2, fi1, fi2, fs, batchSize)
+%ENERGY_RATIO High-/low-frequency mean ratio relative to the centroid.
 %
-% Low band:  fi1 <= |f| < fi2.
-% High band: fi2 <= |f| <= f2.
-% The common boundary fi2 belongs only to the high band.
+% Centroid estimation band: fi1 <= |f| <= f2.
+%
+% Compensated low band:  fi1 <= |f - f_c| < fi2.
+% Compensated high band: fi2 <= |f - f_c| <= f2.
 %
 % f1 is retained for compatibility but is not used.
 
@@ -27,7 +28,7 @@ if size(SH, 3) ~= batchSize
     'The third dimension of SH must equal batchSize.');
 end
 
-SH = abs(SH);
+S = abs(SH);
 
 f = fftfreq(batchSize, 1 / fs);
 absF = abs(f);
@@ -49,6 +50,6 @@ PL = mean(SH(:, :, lowMask), 3, 'omitnan');
 PH = mean(SH(:, :, highMask), 3, 'omitnan');
 
 ratio = PH ./ PL;
-ratio(~isfinite(ratio) | PL <= 0) = NaN;
+ratio(~validCenter | ~isfinite(ratio) | PL <= 0) = NaN;
 
 end
