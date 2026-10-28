@@ -142,8 +142,7 @@ exploreSHbroadBtn.BackgroundColor = btnColor;
 exploreSHbroadBtn.FontColor = textColor;
 exploreSHbroadBtn.Layout.Row = 5;
 exploreSHbroadBtn.Layout.Column = 3;
-exploreSHbroadBtn.ButtonPushedFcn = @(btn, event) ExploreSHbroadening(app.HD.render.SH, app.HD.file.fs, app.HD.params.frequencyRange1, app.HD.params.frequencyRange2);
-
+exploreSHbroadBtn.ButtonPushedFcn = @(~, ~) exploreSHBroadening_Callback(app);
 % Explore Ap button
 exploreApBtn = uibutton(mainGrid, 'push');
 exploreApBtn.Text = 'Explore Ap';
@@ -200,5 +199,118 @@ firstFrameEdit.Limits = [0 Inf];
 lastFrameEdit.Limits = [0 Inf];
 firstFrameEdit.RoundFractionalValues = 'on';
 lastFrameEdit.RoundFractionalValues = 'on';
+
+function exploreSHBroadening_Callback(app)
+
+    try
+
+        % Retrieve images and their requested names
+
+        imageTypes = app.HD.params.imageTypes;
+
+        images = app.HD.render.getImages(imageTypes);
+
+        % Convert the renderer output to a scalar structure
+
+        if iscell(images)
+
+            % Normalize image names to a column cell array of char vectors.
+            imageNames = cellstr(string(imageTypes));
+            imageNames = imageNames(:);
+
+            assert(numel(images) == numel(imageNames), ...
+                ['getImages returned %d images, but imageTypes ' ...
+             'contains %d names.'], ...
+                numel(images), numel(imageNames));
+
+            % Structure field names must be valid and unique.
+            fieldNames = matlab.lang.makeValidName(imageNames);
+
+            fieldNames = matlab.lang.makeUniqueStrings( ...
+                fieldNames, {}, namelengthmax);
+
+            % Column orientation + dim=1 gives one scalar structure.
+            imageMaps = cell2struct( ...
+                images(:), fieldNames, 1);
+
+        elseif isstruct(images) && isscalar(images)
+
+            % Also support a renderer that already returns a structure.
+            imageMaps = images;
+
+        else
+
+            error('ExploreSHbroadening:ImageFormat', ...
+                ['Unsupported getImages output: class "%s", size %s. ' ...
+             'Expected a cell array of images or a scalar structure.'], ...
+                class(images), mat2str(size(images)));
+
+        end
+
+        % Filter images available for background display
+
+        excludedNames = {'broadening'};
+
+        expectedSize = [ ...
+                            size(app.HD.render.SH, 1), ...
+                            size(app.HD.render.SH, 2)];
+
+        names = fieldnames(imageMaps);
+
+        for k = 1:numel(names)
+
+            name = names{k};
+
+            % Explicitly excluded image types.
+            if any(strcmpi(name, excludedNames))
+
+                imageMaps = rmfield(imageMaps, name);
+                continue;
+
+            end
+
+            img = imageMaps.(name);
+
+            % Only real 2D spatial maps are supported here.
+            isCompatible = ...
+                (isnumeric(img) || islogical(img)) ...
+                && isreal(img) ...
+                && ismatrix(img) ...
+                && ~isempty(img) ...
+                && isequal(size(img), expectedSize);
+
+            if ~isCompatible
+
+                warning('ExploreSHbroadening:SkippedImage', ...
+                    ['Image "%s" ignored: expected a real 2D matrix ' ...
+                 'of size [%d %d]; received class "%s", size %s.'], ...
+                    name, expectedSize(1), expectedSize(2), ...
+                    class(img), mat2str(size(img)));
+
+                imageMaps = rmfield(imageMaps, name);
+
+            end
+
+        end
+
+        % Open the explorer
+
+        ExploreSHbroadening( ...
+            app.HD.render.SH, ...
+            app.HD.file.fs, ...
+            app.HD.params.frequencyRange1, ...
+            app.HD.params.frequencyRange2, ...
+            imageMaps, ...
+            app.HD.params.frequencyRangeBandRatio1, ...
+            app.HD.params.frequencyRangeBandRatio2);
+
+    catch ME
+
+        uialert(fig, ME.message, ...
+        'Explore SH broadening');
+
+    end
+
+end
 
 end

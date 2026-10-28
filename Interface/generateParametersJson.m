@@ -20,7 +20,13 @@ params.lambda = fileinfo.lambda; % Add lambda from fileinfo
 params.path = fileinfo.path; % Add path from fileinfo
 params.dir = fileinfo.dir; % Add dir from fileinfo
 params.extension = fileinfo.ext; % Add extension from fileinfo
-params.record_time_stamps_us = fileinfo.record_time_stamps_us; % Add record_time_stamps_us from fileinfo
+% Recording timestamps are optional (e.g. for .cine input).
+if isfield(fileinfo, 'record_time_stamps_us') && ...
+        ~isempty(fileinfo.record_time_stamps_us)
+    params.record_time_stamps_us = fileinfo.record_time_stamps_us;
+elseif isfield(params, 'record_time_stamps_us')
+    params = rmfield(params, 'record_time_stamps_us');
+end
 
 % --- JSON parameters folder -----------------------------------------
 jsonDir = fullfile(result_folder_path, 'json');

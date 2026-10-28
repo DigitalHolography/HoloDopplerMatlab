@@ -1,504 +1,1480 @@
 classdef ExploreSHbroadening < handle
 
 properties
-    fig % Main figure handle
-    SH % Original 3D matrix (can be complex)
-    SH_processed % Processed version of SH (based on display option)
-    avgImage % Average image (first 2 dimensions)
-    axImage % Axis for the image display
-    axPlot % Axis for the spectrum plot
-    rois % list of Region of Interest handle
-    masks % list of masks from ROIs
-    colors
-    panel
-    btnGroup % Button group for display options
+
+    % Figure and axes
+    fig
+    axImage
+    axPlot
+    axFits
+
+    % Input and processed data
+    SH
+    SH_processed
+    avgImage
+
+    % Frequencies: all expressed in kHz
     fs
     f1
     f2
-    outerReference % Reference spectrum from outer diaphragm
+
+    % Optional LF/HF boundaries, also in kHz
+    fi1 = []
+    fi2 = []
+
+    % ROIs and imported masks
+    rois = {}
+    masks = {}
+    colors = {}
+    maskOverlays = {}
+    roiListeners = {}
+
+    % UI controls
+    panel
+    btnGroup
+    imageSelector
+    loglogCheckbox
+
+    % Background images
+    imageMaps = struct()
+    imageMapNames = {}
+    hImage
+
+    % Reference spectrum and fit results
+    outerReference
+    fitResults = {}
+    fitGoodness = {}
+
+end
+
+properties (Access = private)
+
+    isUpdatingSpectrum = false
+    isClosing = false
+
+    spectrumAxesLink = []
+
 end
 
 methods
 
-    function obj = ExploreSHbroadening(SH, fs, f1, f2)
-        % Constructor - initialize the application
-        obj.SH = SH;
-        obj.SH_processed = []; % Start with none
-        obj.fs = fs;
-        obj.f1 = f1;
-        obj.f2 = f2;
-        % Calculate initial average image
-        obj.updateAverageImage();
+    function obj = ExploreSHbroadening( ...
+            SH, fs, f1, f2, imageMaps, fi1, fi2)
 
-        % Create the figure
+        if nargin < 5 || isempty(imageMaps)
+            imageMaps = struct();
+        end
+
+        if nargin < 6
+            fi1 = [];
+        end
+
+        if nargin < 7
+            fi2 = [];
+        end
+
+        validateattributes(SH, {'numeric'}, ...
+            {'nonempty'}, mfilename, 'SH');
+
+        assert(ndims(SH) <= 3 && size(SH, 3) >= 6, ...
+        'SH must contain at least six spectral samples.');
+
+        validateattributes(fs, {'numeric'}, ...
+            {'scalar', 'real', 'finite', 'positive'}, ...
+            mfilename, 'fs');
+
+        validateattributes(f1, {'numeric'}, ...
+            {'scalar', 'real', 'finite', 'positive'}, ...
+            mfilename, 'f1');
+
+        validateattributes(f2, {'numeric'}, ...
+            {'scalar', 'real', 'finite', 'positive'}, ...
+            mfilename, 'f2');
+
+        assert(f1 < f2 && f2 <= fs / 2, ...
+        'Expected 0 < f1 < f2 <= fs/2.');
+
+        obj.SH = SH;
+        obj.SH_processed = abs(SH);
+
+        obj.fs = double(fs);
+        obj.f1 = double(f1);
+        obj.f2 = double(f2);
+
+        obj.validateFrequencyBands(fi1, fi2);
+
+        obj.fi1 = fi1;
+        obj.fi2 = fi2;
+
+        obj.imageMaps = obj.filterImageMaps(imageMaps);
+
+        obj.updateAverageImage();
         obj.createUI();
 
     end
 
     function createUI(obj)
-        % Create the main figure with fixed size
-        obj.fig = figure('Name', 'Explore SH Broadening', 'NumberTitle', 'off', ...
-            'Position', [100, 100, 1000, 600], ...
-            'CloseRequestFcn', @(src, evt)obj.closeFigure());
 
-        % Define layout parameters
-        imageWidth = 0.45; % Width of image display area
-        plotWidth = 0.4; % Width of spectrum plot area
-        panelHeight = 0.35; % Height of control panel
-        margin = 0.05; % Margin around components
-        gap = 0.05; % Gap between components
+        obj.fig = figure( ...
+            'Name', 'Explore SH Broadening', ...
+            'NumberTitle', 'off', ...
+            'Color', 'white', ...
+            'Position', [100, 100, 1400, 850], ...
+            'CloseRequestFcn', @obj.closeFigure);
 
-        % Create image axis (left side)
-        obj.axImage = axes('Parent', obj.fig, ...
-            'Position', [margin, margin + panelHeight + gap, imageWidth, 1 - (panelHeight + 2 * margin + gap)], ...
-            'Units', 'normalized');
+        % Background image
+        obj.axImage = axes( ...
+            'Parent', obj.fig, ...
+            'Units', 'normalized', ...
+            'Position', [0.05, 0.44, 0.43, 0.50]);
 
-        % Create plot axis (right side)
-        obj.axPlot = axes('Parent', obj.fig, ...
-            'Position', [margin + imageWidth + gap, margin + gap, plotWidth, 0.8], ...
-            'Units', 'normalized');
-        title(obj.axPlot, 'Signal Spectrum');
-        xlabel(obj.axPlot, 'Dimension 3 Index');
-        ylabel(obj.axPlot, 'Magnitude');
+        % Upper spectrum panel
+        obj.axPlot = axes( ...
+            'Parent', obj.fig, ...
+            'Units', 'normalized', ...
+            'Position', [0.57, 0.57, 0.40, 0.35]);
 
-        % Create display options panel (bottom left)
-        obj.panel = uipanel('Parent', obj.fig, ...
-            'Title', 'Display Options', ...
-            'Position', [margin, margin, imageWidth, panelHeight], ...
-            'BorderType', 'line');
+        % Lower fit panel
+        obj.axFits = axes( ...
+            'Parent', obj.fig, ...
+            'Units', 'normalized', ...
+            'Position', [0.57, 0.12, 0.40, 0.32]);
 
-        % Create button group for display options
-        obj.btnGroup = uibuttongroup('Parent', obj.panel, ...
-            'Position', [0.02, 0.45, 0.43, 0.5], ...
-            'SelectionChangedFcn', @(src, evt)obj.changeDisplayOption());
+        % Control panel
+        obj.panel = uipanel( ...
+            'Parent', obj.fig, ...
+            'Title', 'Display options', ...
+            'Units', 'normalized', ...
+            'Position', [0.04, 0.05, 0.45, 0.32]);
 
-        % Add radio buttons and checkboxes dynamically
-        options = {
-                   'abs', 'Magnitude';
-                   'abs2', 'Magnitude Squared';
-                   'real', 'Real Part';
-                   'imag', 'Imaginary Part';
-                   'angle', 'Argument (rad)'
-                   };
+        obj.btnGroup = uibuttongroup( ...
+            'Parent', obj.panel, ...
+            'Units', 'normalized', ...
+            'Position', [0.02, 0.43, 0.44, 0.54], ...
+            'SelectionChangedFcn', ...
+            @(~, ~) obj.changeDisplayOption());
 
-        % Create radio buttons for display options
-        for i = 1:size(options, 1)
-            uicontrol('Parent', obj.btnGroup, ...
+        options = { ...
+                       'abs', 'Magnitude'; ...
+                       'abs2', 'Magnitude Squared'; ...
+                       'real', 'Real Part'; ...
+                       'imag', 'Imaginary Part'; ...
+                       'angle', 'Argument (rad)'};
+
+        for k = 1:size(options, 1)
+
+            uicontrol( ...
+                'Parent', obj.btnGroup, ...
                 'Style', 'radiobutton', ...
-                'String', options{i, 2}, ...
-                'Tag', options{i, 1}, ...
+                'String', options{k, 2}, ...
+                'Tag', options{k, 1}, ...
                 'Units', 'normalized', ...
-                'Position', [0.05, 0.8 - 0.15 * (i - 1), 1, 0.15]);
+                'Position', ...
+                [0.04, 0.81 - 0.18 * (k - 1), 0.94, 0.16]);
+
         end
 
-        % Add pushbutton for creating a new ROI
-        uicontrol('Parent', obj.panel, ...
-            'Style', 'pushbutton', ...
-            'String', 'Select ROI', ...
+        obj.btnGroup.SelectedObject = ...
+            findobj(obj.btnGroup, 'Tag', 'abs');
+
+        % Background image selection
+        uicontrol( ...
+            'Parent', obj.panel, ...
+            'Style', 'text', ...
+            'String', 'Displayed image', ...
             'Units', 'normalized', ...
-            'Position', [0.5, 0.7, 0.45, 0.2], ...
-            'Callback', @(src, evt)obj.roiNew());
+            'Position', [0.03, 0.31, 0.42, 0.08], ...
+            'HorizontalAlignment', 'left');
 
-        % Add pushbutton for loading PNG mask
-        uicontrol('Parent', obj.panel, ...
-            'Style', 'pushbutton', ...
-            'String', 'Load PNG Mask', ...
+        obj.imageMapNames = [ ...
+                                 {'Moment 0 - current display mode'}; ...
+                                 fieldnames(obj.imageMaps)];
+
+        obj.imageSelector = uicontrol( ...
+            'Parent', obj.panel, ...
+            'Style', 'popupmenu', ...
+            'String', obj.imageMapNames, ...
+            'Value', 1, ...
             'Units', 'normalized', ...
-            'Position', [0.5, 0.5, 0.45, 0.2], ...
-            'Callback', @(src, evt)obj.loadPNGMask());
+            'Position', [0.03, 0.18, 0.42, 0.12], ...
+            'Callback', @(~, ~) obj.updateImageDisplay());
 
-        % Add pushbutton for clearing all ROIs
-        uicontrol('Parent', obj.panel, ...
-            'Style', 'pushbutton', ...
-            'String', 'Clear ROIs', ...
+        % Log-log display
+        obj.loglogCheckbox = uicontrol( ...
+            'Parent', obj.panel, ...
+            'Style', 'checkbox', ...
+            'String', 'Log-log (positive frequencies)', ...
+            'Value', false, ...
             'Units', 'normalized', ...
-            'Position', [0.5, 0.1, 0.45, 0.2], ...
-            'Callback', @(src, evt)obj.clearROIs());
+            'Position', [0.03, 0.04, 0.44, 0.10], ...
+            'Callback', @(~, ~) obj.spectrum_plotting());
 
-        % Add pushbutton for clearing all ROIs
-        uicontrol('Parent', obj.panel, ...
-            'Style', 'pushbutton', ...
-            'String', 'Save Spectra', ...
-            'Units', 'normalized', ...
-            'Position', [0.5, 0.3, 0.45, 0.2], ...
-            'Callback', @(src, evt)obj.saveSpectra());
+        % Action buttons
+        buttonNames = { ...
+                           'Select ROI', ...
+                           'Load PNG Mask', ...
+                           'Save Spectra', ...
+                       'Clear ROIs'};
 
-        % Set default selection
-        set(obj.btnGroup, 'SelectedObject', findobj(obj.btnGroup, 'Tag', 'abs'));
-        obj.changeDisplayOption();
-        %obj.updateImageDisplay();
+        callbacks = { ...
+                         @(~, ~) obj.roiNew(), ...
+                         @(~, ~) obj.loadPNGMask(), ...
+                         @(~, ~) obj.saveSpectra(), ...
+                         @(~, ~) obj.clearROIs()};
 
-        % Initial plot
+        for k = 1:numel(buttonNames)
+
+            uicontrol( ...
+                'Parent', obj.panel, ...
+                'Style', 'pushbutton', ...
+                'String', buttonNames{k}, ...
+                'Units', 'normalized', ...
+                'Position', ...
+                [0.51, 0.76 - 0.23 * (k - 1), 0.45, 0.20], ...
+                'Callback', callbacks{k});
+
+        end
+
+        obj.updateImageDisplay();
         obj.spectrum_plotting();
+
     end
 
     function changeDisplayOption(obj)
-        % Handle display option change
-        selectedOption = get(obj.btnGroup, 'SelectedObject').Tag;
 
-        switch selectedOption
-            case 'abs'
-                obj.SH_processed = abs(obj.SH);
-            case 'abs2'
-                obj.SH_processed = abs(obj.SH) .^ 2;
-            case 'real'
-                obj.SH_processed = real(obj.SH);
-            case 'imag'
-                obj.SH_processed = imag(obj.SH);
-            case 'angle'
-                obj.SH_processed = angle(obj.SH);
+        if obj.isClosing
+            return;
         end
 
-        % Update display
+        selectedOption = obj.btnGroup.SelectedObject.Tag;
+
+        switch selectedOption
+
+            case 'abs'
+                obj.SH_processed = abs(obj.SH);
+
+            case 'abs2'
+                obj.SH_processed = abs(obj.SH) .^ 2;
+
+            case 'real'
+                obj.SH_processed = real(obj.SH);
+
+            case 'imag'
+                obj.SH_processed = imag(obj.SH);
+
+            case 'angle'
+                obj.SH_processed = angle(obj.SH);
+
+        end
+
         obj.updateAverageImage();
         obj.updateImageDisplay();
         obj.spectrum_plotting();
+
     end
 
     function updateAverageImage(obj)
-        % Calculate average image based on current processing
-        obj.avgImage = moment0(obj.SH_processed, obj.f1, obj.f2, obj.fs, size(obj.SH_processed, 3), 0);
+
+        obj.avgImage = moment0( ...
+            obj.SH_processed, ...
+            obj.f1, obj.f2, obj.fs, ...
+            size(obj.SH_processed, 3), 0);
+
+    end
+
+    function validateFrequencyBands(obj, fi1, fi2)
+
+        if ~isempty(fi1)
+
+            validateattributes(fi1, {'numeric'}, ...
+                {'scalar', 'real', 'finite'});
+
+            assert(obj.f1 <= fi1 && fi1 <= obj.f2, ...
+            'Expected f1 <= fi1 <= f2.');
+
+        end
+
+        if ~isempty(fi2)
+
+            validateattributes(fi2, {'numeric'}, ...
+                {'scalar', 'real', 'finite'});
+
+            assert(obj.f1 <= fi2 && fi2 <= obj.f2, ...
+            'Expected f1 <= fi2 <= f2.');
+
+        end
+
+        if ~isempty(fi1) && ~isempty(fi2)
+
+            assert(fi1 <= fi2, ...
+            'Expected fi1 <= fi2.');
+
+        end
+
+    end
+
+    function setFrequencyBands(obj, fi1, fi2)
+
+        obj.validateFrequencyBands(fi1, fi2);
+
+        obj.fi1 = fi1;
+        obj.fi2 = fi2;
+
+        obj.spectrum_plotting();
+
+    end
+
+    function maps = filterImageMaps(obj, maps)
+
+        assert(isstruct(maps) && isscalar(maps), ...
+            ['imageMaps must be a scalar structure. ' ...
+         'Convert the getImages cell array in AdvancedPanel.']);
+
+        excludedNames = {'broadening'};
+
+        expectedSize = [ ...
+                            size(obj.SH, 1), size(obj.SH, 2)];
+
+        names = fieldnames(maps);
+
+        for k = 1:numel(names)
+
+            name = names{k};
+
+            if any(strcmpi(name, excludedNames))
+
+                maps = rmfield(maps, name);
+                continue;
+
+            end
+
+            img = maps.(name);
+
+            isCompatible = ...
+                (isnumeric(img) || islogical(img)) ...
+                && isreal(img) ...
+                && ismatrix(img) ...
+                && ~isempty(img) ...
+                && isequal(size(img), expectedSize);
+
+            if ~isCompatible
+
+                warning('ExploreSHbroadening:SkippedImage', ...
+                    ['Image "%s" ignored: expected a real matrix ' ...
+                 'of size [%d %d]; received class "%s", size %s.'], ...
+                    name, expectedSize(1), expectedSize(2), ...
+                    class(img), mat2str(size(img)));
+
+                maps = rmfield(maps, name);
+
+            end
+
+        end
+
+    end
+
+    function setImageMaps(obj, maps)
+
+        maps = obj.filterImageMaps(maps);
+
+        previousName = '';
+
+        if ~isempty(obj.imageSelector) ...
+                && isgraphics(obj.imageSelector)
+
+            index = obj.imageSelector.Value;
+
+            if index > 1 && index <= numel(obj.imageMapNames)
+                previousName = obj.imageMapNames{index};
+            end
+
+        end
+
+        obj.imageMaps = maps;
+
+        obj.imageMapNames = [ ...
+                                 {'Moment 0 - current display mode'}; ...
+                                 fieldnames(maps)];
+
+        selectedIndex = 1;
+
+        if ~isempty(previousName)
+
+            index = find(strcmp( ...
+                obj.imageMapNames, previousName), 1);
+
+            if ~isempty(index)
+                selectedIndex = index;
+            end
+
+        end
+
+        if ~isempty(obj.imageSelector) ...
+                && isgraphics(obj.imageSelector)
+
+            set(obj.imageSelector, ...
+                'Value', 1, ...
+                'String', obj.imageMapNames);
+
+            obj.imageSelector.Value = selectedIndex;
+
+        end
+
+        obj.updateImageDisplay();
+
     end
 
     function updateImageDisplay(obj)
 
-        % Update the image display with real values
-        axes(obj.axImage);
-        [Nx, Ny] = size(obj.avgImage);
-        Nd = max(Nx, Ny);
-        imagesc(imresize(obj.avgImage, [Nd Nd]));
-        axis image;
-        colormap(obj.axImage, 'gray');
-        title('Moment order 0 f1 f2 Image');
-        colorbar;
-    end
+        if obj.isClosing ...
+                || isempty(obj.axImage) ...
+                || ~isgraphics(obj.axImage)
 
-    function clearROIs(obj)
-        % Clear all ROIs and reset the mask
-        if ~isempty(obj.rois)
-
-            for i = 1:length(obj.rois)
-
-                if obj.rois{i} == 1
-                    continue;
-                end
-
-                if isempty(obj.rois{i}) || ~isvalid(obj.rois{i})
-                    continue;
-                end
-
-                delete(obj.rois{i});
-
-            end
+            return;
 
         end
 
-        obj.rois = [];
-        obj.masks = [];
-        obj.colors = [];
-        obj.updateImageDisplay();
-        obj.spectrum_plotting(); % Update the spectrum plot
-    end
+        selectedIndex = obj.imageSelector.Value;
 
-    function saveSpectra(obj)
-        % Saves Spectra into the preview folder
+        if selectedIndex == 1
 
-        folderPath = uigetdir(pwd, 'Select a folder to save the figure');
+            img = obj.avgImage;
+            imageTitle = 'Moment 0 - current display mode';
 
-        % Check if user selected a folder (didn't click Cancel)
-        if folderPath ~= 0
-            % Ask user for filename
-            defaultName = 'spectra';
-            prompt = {'Enter filename (without extension):'};
-            dlgtitle = 'Save Figure';
-            dims = [1 35];
-            answer = inputdlg(prompt, dlgtitle, dims, {defaultName});
+        else
 
-            % Check if user entered a filename
-            if ~isempty(answer)
-                fileName = answer{1};
+            name = obj.imageMapNames{selectedIndex};
 
-                % Construct full file path
-                fullFilePath = fullfile(folderPath, [fileName, '.png']);
+            img = obj.imageMaps.(name);
+            imageTitle = name;
 
-                % Save the figure using exportgraphics
-                exportgraphics(obj.axPlot, fullFilePath, 'Resolution', 300);
+        end
 
-                % Display confirmation message
-                fprintf('Figure saved successfully to:\n%s\n', fullFilePath);
+        % Preserve the square display geometry used by ROI masks.
+        M = max(size(obj.SH, 1), size(obj.SH, 2));
 
-            else
-                disp('Save cancelled: No filename provided');
+        displayImage = imresize(double(img), [M, M]);
+
+        if isempty(obj.hImage) || ~isgraphics(obj.hImage)
+
+            wasHeld = ishold(obj.axImage);
+            hold(obj.axImage, 'on');
+
+            obj.hImage = imagesc(obj.axImage, displayImage);
+
+            if ~wasHeld
+                hold(obj.axImage, 'off');
             end
 
         else
-            disp('Save cancelled: No folder selected');
+
+            set(obj.hImage, ...
+                'CData', displayImage, ...
+                'XData', [1, M], ...
+                'YData', [1, M]);
+
         end
+
+        uistack(obj.hImage, 'bottom');
+
+        set(obj.axImage, ...
+            'YDir', 'reverse', ...
+            'CLimMode', 'auto');
+
+        axis(obj.axImage, 'image');
+
+        xlim(obj.axImage, [0.5, M + 0.5]);
+        ylim(obj.axImage, [0.5, M + 0.5]);
+
+        colormap(obj.axImage, 'gray');
+
+        title(obj.axImage, imageTitle, ...
+            'Interpreter', 'none');
+
+    end
+
+    function color = getROIColor(obj, index)
+
+        if index <= numel(obj.colors) ...
+                && ~isempty(obj.colors{index})
+
+            color = obj.colors{index};
+            return;
+
+        end
+
+        palette = lines(7);
+
+        color = palette( ...
+            mod(index - 1, size(palette, 1)) + 1, :);
 
     end
 
     function roiNew(obj, manual)
 
+        if obj.isClosing
+            return;
+        end
+
         if nargin < 2
             manual = false;
         end
 
-        n = length(obj.rois);
-        C = colororder('gem');
-        randomColor = C(mod(n, 7) + 1, :); % Generate a random RGB color
+        index = numel(obj.rois) + 1;
+        roiColor = obj.getROIColor(index);
 
         if manual
-            obj.rois{end + 1} = drawfreehand(obj.axImage, 'Color', randomColor, ...
-                'DrawingArea', 'unlimited', ...
+
+            roi = drawfreehand(obj.axImage, ...
+                'Color', roiColor, ...
                 'FaceAlpha', 0.2, ...
+                'DrawingArea', 'unlimited', ...
                 'InteractionsAllowed', 'translate');
+
         else
-            obj.rois{end + 1} = drawrectangle(obj.axImage, 'Color', randomColor, ...
-                'DrawingArea', 'unlimited', ...
+
+            roi = drawrectangle(obj.axImage, ...
+                'Color', roiColor, ...
                 'FaceAlpha', 0.2, ...
+                'DrawingArea', 'unlimited', ...
                 'InteractionsAllowed', 'translate');
+
         end
 
-        obj.colors{end + 1} = randomColor;
-        % Add listener to ROI for position changes
-        addlistener(obj.rois{end}, 'MovingROI', @(src, evt)obj.spectrum_plotting());
-        % Callback for when ROI is moved
+        if obj.isClosing || isempty(roi) || ~isvalid(roi)
+            return;
+        end
+
+        obj.rois{index} = roi;
+        obj.colors{index} = roiColor;
+        obj.masks{index} = [];
+        obj.maskOverlays{index} = [];
+
+        obj.roiListeners{index} = { ...
+                                       addlistener(roi, 'MovingROI', ...
+                                       @(~, ~) obj.spectrum_plotting()), ...
+                                       addlistener(roi, 'ROIMoved', ...
+                                       @(~, ~) obj.spectrum_plotting())};
+
         obj.spectrum_plotting();
+
     end
 
     function updateMasks(obj)
-        % Update the mask based on current ROI position
-        for i = 1:numel(obj.rois)
-            roi = obj.rois{i};
 
-            if roi == 1
+        nROI = numel(obj.rois);
+
+        Ny = size(obj.SH_processed, 1);
+        Nx = size(obj.SH_processed, 2);
+
+        M = max(Ny, Nx);
+
+        if numel(obj.masks) < nROI
+            obj.masks{nROI} = [];
+        end
+
+        for k = 1:nROI
+
+            roi = obj.rois{k};
+
+            % Imported mask: no interactive ROI to update.
+            if isnumeric(roi) && isscalar(roi) && roi == 1
                 continue;
             end
+
+            obj.masks{k} = [];
 
             if isempty(roi) || ~isvalid(roi)
                 continue;
             end
 
-            roiPos = roi.Position; % [x, y, width, height]
+            displayMask = createMask(roi, M, M);
 
-            % Create a binary mask
-            [Ny, Nx, ~] = size(obj.SH_processed);
-            M = max(Nx, Ny);
-            rx = Nx / M;
-            ry = Ny / M;
-            [X, Y] = meshgrid(1:Nx, 1:Ny);
+            obj.masks{k} = imresize( ...
+                displayMask, [Ny, Nx], 'nearest') > 0;
 
-            obj.masks{i} = (X >= roiPos(1) * rx) & (X <= roiPos(1) * rx + roiPos(3) * rx) & ...
-                (Y >= roiPos(2) * ry) & (Y <= roiPos(2) * ry + roiPos(4) * ry);
         end
 
     end
 
     function loadPNGMask(obj)
-        % Load a PNG file and use it as a mask
-        [filename, pathname] = uigetfile({'*.png;*.bmp;*.jpg;*.tif', 'Image Files'; ...
-                                              '*.*', 'All Files'}, ...
-        'Select a mask image');
 
-        if isequal(filename, 0) || isequal(pathname, 0)
-            % User cancelled
+        if obj.isClosing
             return;
         end
 
-        fullpath = fullfile(pathname, filename);
+        [filename, pathname] = uigetfile( ...
+            {'*.png;*.bmp;*.jpg;*.tif', 'Image files'; ...
+             '*.*', 'All files'}, ...
+        'Select a mask image');
+
+        if isequal(filename, 0) || obj.isClosing
+            return;
+        end
 
         try
-            % Read the image
-            maskImage = imread(fullpath);
 
-            % Convert to grayscale if RGB
-            if size(maskImage, 3) > 1
+            [maskImage, map] = imread( ...
+                fullfile(pathname, filename));
+
+            if ~isempty(map)
+
+                maskImage = ind2gray(maskImage, map);
+
+            elseif size(maskImage, 3) == 3
+
                 maskImage = rgb2gray(maskImage);
+
             end
 
-            % Convert to binary mask (non-zero values become 1)
-            maskBinary = imbinarize(maskImage);
+            if islogical(maskImage)
+                maskBinary = maskImage;
+            else
+                maskBinary = imbinarize(maskImage);
+            end
 
-            % Get the current image size
-            [Ny, Nx, ~] = size(obj.SH_processed);
-            M = max(Nx, Ny);
+            Ny = size(obj.SH_processed, 1);
+            Nx = size(obj.SH_processed, 2);
+            M = max(Ny, Nx);
 
-            % Resize the mask to match the current image display dimensions
-            maskResized = imresize(maskBinary, [Ny, Nx]);
+            maskBinary = imresize( ...
+                maskBinary, [Ny, Nx], 'nearest') > 0;
 
-            obj.rois{end + 1} = 1;
-            obj.masks{end + 1} = maskResized; % Store the image handle
+            assert(any(maskBinary(:)), ...
+            'The imported mask is empty.');
 
-            n = length(obj.rois) - 1;
-            C = colororder('gem');
-            randomColor = C(mod(n, 7) + 1, :); % Generate a random RGB color
-            obj.colors{end + 1} = randomColor;
+            index = numel(obj.rois) + 1;
+            roiColor = obj.getROIColor(index);
 
-            % Create a visual representation of the mask
-            % Since we can't create a drawrectangle/drawfreehand from existing mask,
-            % we'll create a semitransparent overlay
+            displayMask = imresize( ...
+                maskBinary, [M, M], 'nearest');
+
+            overlay = repmat( ...
+                reshape(roiColor, 1, 1, 3), M, M);
+
+            wasHeld = ishold(obj.axImage);
             hold(obj.axImage, 'on');
 
-            % Create an overlay image
-            overlay = zeros(Ny, Nx, 3);
+            h = image(obj.axImage, ...
+                'CData', overlay, ...
+                'AlphaData', 0.3 * double(displayMask), ...
+                'HitTest', 'off');
 
-            for c = 1:3
-                overlay(:, :, c) = maskResized * randomColor(c);
+            if ~wasHeld
+                hold(obj.axImage, 'off');
             end
 
-            % Display the overlay
-            h = imagesc(imresize(overlay, [M, M]), 'Parent', obj.axImage);
-            set(h, 'AlphaData', imresize(maskResized, [M, M]) * 0.3); % 30 % transparency
+            obj.rois{index} = 1;
+            obj.masks{index} = maskBinary;
+            obj.colors{index} = roiColor;
+            obj.roiListeners{index} = {};
+            obj.maskOverlays{index} = h;
 
-            % Just update the spectrum plot
             obj.spectrum_plotting();
 
-            fprintf('Loaded mask from: %s\n', filename);
-
         catch ME
-            MEdisp(ME);
+
+            errordlg(ME.message, 'Mask import error');
+
         end
+
+    end
+
+    function deleteROIListeners(obj)
+
+        for k = 1:numel(obj.roiListeners)
+
+            listeners = obj.roiListeners{k};
+
+            for j = 1:numel(listeners)
+
+                listener = listeners{j};
+
+                if ~isempty(listener) && isvalid(listener)
+                    delete(listener);
+                end
+
+            end
+
+        end
+
+        obj.roiListeners = {};
+
+    end
+
+    function clearROIs(obj)
+
+        if obj.isClosing
+            return;
+        end
+
+        obj.deleteROIListeners();
+
+        for k = 1:numel(obj.rois)
+
+            roi = obj.rois{k};
+
+            if isnumeric(roi)
+                continue;
+            end
+
+            if ~isempty(roi) && isvalid(roi)
+                delete(roi);
+            end
+
+        end
+
+        for k = 1:numel(obj.maskOverlays)
+
+            h = obj.maskOverlays{k};
+
+            if ~isempty(h) && isgraphics(h)
+                delete(h);
+            end
+
+        end
+
+        obj.rois = {};
+        obj.masks = {};
+        obj.colors = {};
+        obj.maskOverlays = {};
+
+        obj.fitResults = {};
+        obj.fitGoodness = {};
+
+        obj.spectrum_plotting();
 
     end
 
     function spectrum_plotting(obj)
 
-        % Extract parameters for easier access
-        f_1 = obj.f1;
-        f_2 = obj.f2;
-        f_s = obj.fs;
-        batchSize = size(obj.SH_processed, 3);
+        % Prevent nested redraws.
+        if obj.isClosing || obj.isUpdatingSpectrum
+            return;
+        end
 
-        axes(obj.axPlot);
-        cla(obj.axPlot); % Clear the previous plot
-        title(obj.axPlot, 'Signal Spectrum');
-        xlabel(obj.axPlot, 'Dimension 3 Index');
-        ylabel(obj.axPlot, 'Magnitude');
+        axTop = obj.axPlot;
+        axBottom = obj.axFits;
+
+        if isempty(axTop) || isempty(axBottom) ...
+                || ~isgraphics(axTop) || ~isgraphics(axBottom)
+
+            return;
+
+        end
+
+        obj.isUpdatingSpectrum = true;
+
+        updateCleanup = onCleanup( ...
+            @() obj.finishSpectrumUpdate());
+
+        % Delete our own link before resetting the axes.
+        obj.unlinkSpectrumAxes();
+
+        legend(axTop, 'off');
+        legend(axBottom, 'off');
+
+        cla(axTop, 'reset');
+        cla(axBottom, 'reset');
+
+        hold(axTop, 'on');
+        hold(axBottom, 'on');
+
+        obj.fitResults = cell(1, numel(obj.rois));
+        obj.fitGoodness = cell(1, numel(obj.rois));
+
+        nFreq = size(obj.SH_processed, 3);
+
+        % Display mode
+        selectedOption = obj.btnGroup.SelectedObject.Tag;
+
+        isMagnitude = ismember(selectedOption, {'abs', 'abs2'});
+        isAngle = strcmp(selectedOption, 'angle');
+
+        if isMagnitude
+
+            obj.loglogCheckbox.Enable = 'on';
+
+        else
+
+            obj.loglogCheckbox.Value = false;
+            obj.loglogCheckbox.Enable = 'off';
+
+        end
+
+        useLogLog = ...
+            isMagnitude && logical(obj.loglogCheckbox.Value);
+
+        if useLogLog
+
+            plotOrdinate = @(v) 10 .^ v;
+            labelText = 'S';
+
+        elseif isMagnitude
+
+            plotOrdinate = @(v) v;
+            labelText = 'log_{10} S';
+
+        elseif isAngle
+
+            plotOrdinate = @(v) v;
+            labelText = 'Phase (rad)';
+
+        else
+
+            plotOrdinate = @(v) v;
+            labelText = 'S';
+
+        end
+
+        % Axes appearance
+        title(axTop, 'Signal Spectrum');
+        title(axBottom, 'Aliased pseudo-Voigt fits');
+
+        xlabel(axTop, 'Frequency (kHz)');
+        xlabel(axBottom, 'Frequency (kHz)');
+
+        ylabel(axTop, labelText);
+        ylabel(axBottom, labelText);
+
+        set([axTop, axBottom], ...
+            'FontSize', 11, ...
+            'LineWidth', 1, ...
+            'TickDir', 'out', ...
+            'Box', 'on', ...
+            'Layer', 'top', ...
+            'SortMethod', 'childorder', ...
+            'GridAlpha', 0.18, ...
+            'GridColor', [0.35, 0.35, 0.35]);
+
+        grid(axTop, 'on');
+        grid(axBottom, 'on');
+
+        if useLogLog
+
+            minimumFrequency = obj.fs / nFreq;
+
+            set([axTop, axBottom], ...
+                'XScale', 'log', ...
+                'YScale', 'log', ...
+                'XTickMode', 'auto', ...
+                'YTickMode', 'auto', ...
+                'XMinorGrid', 'on', ...
+                'YMinorGrid', 'on', ...
+                'MinorGridAlpha', 0.08);
+
+            set([axTop, axBottom], ...
+                'XLim', [minimumFrequency, obj.fs / 2]);
+
+        else
+
+            set([axTop, axBottom], ...
+                'XScale', 'linear', ...
+                'YScale', 'linear', ...
+                'XMinorGrid', 'off', ...
+                'YMinorGrid', 'off');
+
+            set([axTop, axBottom], ...
+                'XLim', [-obj.fs / 2, obj.fs / 2]);
+
+            ticks = unique([ ...
+                                -obj.f2, -obj.f1, 0, obj.f1, obj.f2]);
+
+            xticks(axTop, ticks);
+            xticks(axBottom, ticks);
+
+        end
 
         if isempty(obj.rois)
-            return
+
+            linkaxes([axTop, axBottom], 'xy');
+
+            obj.shadeFrequencyBands(axTop);
+            obj.shadeFrequencyBands(axBottom);
+
+            return;
+
         end
 
-        angleout = strcmp(get(obj.btnGroup.SelectedObject, 'Tag'), 'angle');
-
-        if angleout
-            scalingfn = @(a) a;
-        else
-            scalingfn = @(a) log10(a);
-        end
-
-        % Plot the spectrum for the selected region
+        % Masks and reference
         obj.updateMasks();
 
-        if angleout
-            ylabel('S', 'FontSize', 14);
+        if isMagnitude
+
+            obj.makeOuterDiaphragmReference();
+            reference = obj.outerReference(:);
+
+            assert(numel(reference) == nFreq, ...
+            'The reference spectrum has an incompatible size.');
+
         else
-            ylabel('log10 S', 'FontSize', 14);
+
+            reference = [];
+
         end
 
-        obj.makeOuterDiaphragmReference()
+        % Frequency coordinates, in kHz
+        axisFrequency = ...
+            (-floor(nFreq / 2):ceil(nFreq / 2) - 1).' ...
+            * obj.fs / nFreq;
 
-        for i = 1:numel(obj.rois)
+        bandMask = ...
+            abs(axisFrequency) >= obj.f1 ...
+            & abs(axisFrequency) <= obj.f2;
 
-            mask = obj.masks{i};
+        if useLogLog
 
-            if isempty(mask)
-                return;
+            xFit = logspace( ...
+                log10(obj.fs / nFreq), ...
+                log10(obj.fs / 2), ...
+                3000).';
+
+        else
+
+            xFit = linspace( ...
+                -obj.fs / 2, obj.fs / 2, 3000).';
+
+        end
+
+        fitDisplayMask = ...
+            abs(xFit) >= obj.f1 ...
+            & abs(xFit) <= obj.f2;
+
+        spatialSpectra = reshape( ...
+            obj.SH_processed, [], nFreq);
+
+        spectrumHandles = gobjects(0, 1);
+        fitHandles = gobjects(0, 1);
+
+        topFitHandles = gobjects(0, 1);
+        topFitHaloHandles = gobjects(0, 1);
+
+        % Process ROIs
+        for k = 1:numel(obj.rois)
+
+            if k > numel(obj.masks)
+                continue;
             end
 
-            % Compute the average spectrum for the masked region
-            SH_mask = obj.SH_processed .* mask;
-            spectrumAVG_mask = squeeze(sum(SH_mask, [1 2])) / nnz(mask);
-            spectrumAVG_mask = spectrumAVG_mask ./ obj.outerReference;
-            momentM0 = moment0(obj.SH_processed, f_1, f_2, f_s, batchSize);
-            momentM2 = moment2(obj.SH_processed, f_1, f_2, f_s, batchSize);
-            M0_full = mean(momentM0, [1, 2]);
-            M2 = mean(momentM2(mask));
-            omegaRMS = sqrt(M2 / M0_full); % sqrt(M2/M0);
-            omegaRMS_index = omegaRMS * batchSize / f_s;
-            I_omega = scalingfn(spectrumAVG_mask(round(omegaRMS_index)));
-            axis_x = linspace(-f_s / 2, f_s / 2, size(SH_mask, 3));
+            mask = obj.masks{k};
 
-            % Get the color of the current ROI
-            roiColor = obj.colors{i};
+            if isempty(mask) || ~any(mask(:))
+                continue;
+            end
 
-            p_mask = plot(axis_x, fftshift(scalingfn(spectrumAVG_mask)), 'Color', roiColor, 'LineWidth', 1, 'DisplayName', 'Arteries');
-            xlim([-f_s / 2 f_s / 2])
+            roiColor = obj.getROIColor(k);
 
-            axis padded
-            axP = axis;
-            axis([-f_s / 2 f_s / 2, axP(3), axP(4)])
+            roi = obj.rois{k};
 
-            om_RMS_line = line([-omegaRMS omegaRMS], [I_omega I_omega]);
-            om_RMS_line.Color = roiColor;
-            om_RMS_line.LineStyle = '-';
-            om_RMS_line.Marker = '|';
-            om_RMS_line.MarkerSize = 12;
-            om_RMS_line.LineWidth = 1;
-            om_RMS_line.Tag = sprintf('f_{RMS %d} = %.2f kHz', i, omegaRMS);
-            %fprintf('f_{RMS %d} = %.2f kHz\n', i, omegaRMS);
-            text(10, I_omega, sprintf('f_{RMS %d} = %.2f kHz', i, omegaRMS), 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom')
-            set(gca, 'LineWidth', 1);
-            uistack(p_mask, 'top');
-            uistack(gca, 'top');
+            if ~isnumeric(roi) ...
+                    && ~isempty(roi) && isvalid(roi)
 
-            hold on
+                roi.Color = roiColor;
 
-            fit_spectrum_voigt(axis_x, log10(fftshift(spectrumAVG_mask)), f_1, f_2, annotation = false);
+            end
+
+            spectrum = double(mean( ...
+                spatialSpectra(mask(:), :), 1).');
+
+            % Normalize and prepare fitting ordinates.
+            if isMagnitude
+
+                normalizedSpectrum = NaN(nFreq, 1);
+
+                validReference = ...
+                    isfinite(reference) & reference > 0;
+
+                normalizedSpectrum(validReference) = ...
+                    spectrum(validReference) ...
+                    ./ reference(validReference);
+
+                spectrumCentered = fftshift(normalizedSpectrum);
+
+                % Fit input remains log10(S) in both display modes.
+                displayedSpectrum = NaN(nFreq, 1);
+
+                validDisplay = ...
+                    isfinite(spectrumCentered) ...
+                    & spectrumCentered > 0;
+
+                displayedSpectrum(validDisplay) = ...
+                    log10(spectrumCentered(validDisplay));
+
+            else
+
+                spectrumCentered = fftshift(spectrum);
+                displayedSpectrum = spectrumCentered;
+
+            end
+
+            % Plot noisy samples.
+            plottedSpectrum = plotOrdinate(displayedSpectrum);
+
+            if useLogLog
+
+                invalid = ...
+                    axisFrequency <= 0 ...
+                    | ~isfinite(plottedSpectrum) ...
+                    | plottedSpectrum <= 0;
+
+                plottedSpectrum(invalid) = NaN;
+
+            end
+
+            spectrumHandles(end + 1, 1) = plot( ...
+                axTop, axisFrequency, plottedSpectrum, ...
+                'LineStyle', '-', ...
+                'Marker', 'none', ...
+                'LineWidth', 0.5, ...
+                'Color', roiColor, ...
+                'DisplayName', sprintf('ROI %d', k));
+
+            if ~isMagnitude
+                continue;
+            end
+
+            % Fit log10(S), independently of the display mode.
+            validFit = ...
+                bandMask & isfinite(displayedSpectrum);
+
+            if nnz(validFit) < 6
+
+                warning( ...
+                    'ExploreSHbroadening:InsufficientFitData', ...
+                    'ROI %d: fewer than six finite fitting samples.', ...
+                    k);
+
+                continue;
+
+            end
+
+            try
+
+                % No automatic plotting from the fitting function.
+                [fitObj, gof] = fit_spectrum_voigt( ...
+                    axisFrequency, displayedSpectrum, obj.f1, obj.f2, ...
+                    Fs = obj.fs, ...
+                    momentSignal = spectrumCentered, ...
+                    annotation = false, ...
+                    plot = false, ...
+                    verbose = true);
+
+                obj.fitResults{k} = fitObj;
+                obj.fitGoodness{k} = gof;
+
+                fitY = fitObj.evaluate(xFit);
+                fitYBottom = plotOrdinate(fitY);
+
+                % Remove invalid displayed ordinates.
+                invalid = ~isfinite(fitYBottom);
+
+                if useLogLog
+
+                    invalid = invalid ...
+                        | xFit <= 0 ...
+                        | fitYBottom <= 0;
+
+                end
+
+                fitYBottom(invalid) = NaN;
+
+                % Upper panel: fitted frequency bands only.
+                fitYTop = fitYBottom;
+                fitYTop(~fitDisplayMask) = NaN;
+
+                % White outline behind the colored fit.
+                topFitHaloHandles(end + 1, 1) = plot( ...
+                    axTop, xFit, fitYTop, ...
+                    'Color', [1, 1, 1], ...
+                    'LineStyle', '-', ...
+                    'LineWidth', 5, ...
+                    'HandleVisibility', 'off', ...
+                    'HitTest', 'off');
+
+                % Colored fit, matching the ROI.
+                topFitHandles(end + 1, 1) = plot( ...
+                    axTop, xFit, fitYTop, ...
+                    'Color', roiColor, ...
+                    'LineStyle', '-', ...
+                    'LineWidth', 2.8, ...
+                    'HandleVisibility', 'off', ...
+                    'HitTest', 'off');
+
+                % Lower panel: full model, including excluded bands.
+                fitHandles(end + 1, 1) = plot( ...
+                    axBottom, xFit, fitYBottom, ...
+                    'Color', roiColor, ...
+                    'LineStyle', '-', ...
+                    'LineWidth', 2, ...
+                    'DisplayName', sprintf( ...
+                    'ROI %d | w = %.2f kHz | R^2 = %.3f', ...
+                    k, fitObj.w, gof.rsquare));
+
+            catch ME
+
+                warning('ExploreSHbroadening:FitFailed', ...
+                    'ROI %d: %s', k, ME.message);
+
+            end
 
         end
 
-        pbaspect([1.618 1 1]);
-        box on,
-        set(gca, 'FontSize', 12, 'LineWidth', 2);
+        % Update graphics without processing queued callbacks.
+        drawnow nocallbacks;
 
-        % Fill in gray the are between f1 and -f1, and between f2 or -f2 and outer boundaries
-        % Store fill handles for later reordering
-        fillHandles = gobjects(3, 1);
+        if obj.isClosing ...
+                || ~isgraphics(axTop) ...
+                || ~isgraphics(axBottom)
 
-        fig_axis = axis;
-        c_gray = [0.9 0.9 0.9];
-        X = [fig_axis(1) -f_2 -f_2 fig_axis(1)];
-        Y = [fig_axis(4) fig_axis(4) fig_axis(3) fig_axis(3)];
-        fillHandles(1) = fill(X, Y, c_gray, 'EdgeColor', 'black', 'LineWidth', 1, 'DisplayName', 'Arteries');
+            return;
 
-        X = [-f_1 f_1 f_1 -f_1];
-        Y = [fig_axis(4) fig_axis(4) fig_axis(3) fig_axis(3)];
-        fillHandles(2) = fill(X, Y, c_gray, 'EdgeColor', 'black', 'LineWidth', 1, 'DisplayName', 'Arteries');
-
-        X = [f_2 fig_axis(2) fig_axis(2) f_2];
-        Y = [fig_axis(4) fig_axis(4) fig_axis(3) fig_axis(3)];
-        fillHandles(3) = fill(X, Y, c_gray, 'EdgeColor', 'black', 'LineWidth', 1, 'DisplayName', 'Arteries');
-
-        % Move all fills to the background
-        for j = 1:length(fillHandles)
-            uistack(fillHandles(j), 'bottom');
         end
 
-        xticks([-f_2 -f_1 0 f_1 f_2])
-        xticklabels({num2str(round(-f_2, 1)), num2str(round(-f_1, 1)), '0', num2str(round(f_1, 1)), num2str(round(f_2, 1))})
-        fontsize(gca, 12, "points");
-        xlabel('frequency (kHz)', 'FontSize', 14);
+        % Synchronize completed plots before adding shading.
+        linkaxes([axTop, axBottom], 'xy');
 
-        yline(0, 'LineWidth', 2)
+        % Background bands.
+        obj.shadeFrequencyBands(axTop);
+        obj.shadeFrequencyBands(axBottom);
+
+        % Bring all upper-panel fits above all noisy samples.
+        validHalos = topFitHaloHandles( ...
+            isgraphics(topFitHaloHandles, 'line'));
+
+        validFits = topFitHandles( ...
+            isgraphics(topFitHandles, 'line'));
+
+        if ~isempty(validHalos)
+            uistack(validHalos, 'top');
+        end
+
+        if ~isempty(validFits)
+            uistack(validFits, 'top');
+        end
+
+        % Legends: only retain valid plotted objects.
+        spectrumHandles = spectrumHandles( ...
+            isgraphics(spectrumHandles, 'line'));
+
+        fitHandles = fitHandles( ...
+            isgraphics(fitHandles, 'line'));
+
+        if ~isempty(spectrumHandles)
+
+            lgd = legend(axTop, spectrumHandles, ...
+                'Location', 'best', ...
+                'Box', 'off');
+
+            lgd.AutoUpdate = 'off';
+
+        end
+
+        if ~isempty(fitHandles)
+
+            lgd = legend(axBottom, fitHandles, ...
+                'Location', 'best', ...
+                'Box', 'off', ...
+                'FontSize', 9);
+
+            lgd.AutoUpdate = 'off';
+
+        else
+
+            if isMagnitude
+                message = 'No available fit';
+            else
+                message = 'Fits available in magnitude modes only';
+            end
+
+            text(axBottom, 0.5, 0.5, message, ...
+                'Units', 'normalized', ...
+                'HorizontalAlignment', 'center', ...
+                'Color', [0.4, 0.4, 0.4]);
+
+        end
+
+    end
+
+    function shadeFrequencyBands(obj, ax)
+
+        if isempty(ax) || ~isgraphics(ax)
+            return;
+        end
+
+        yLimits = ylim(ax);
+        xLimits = xlim(ax);
+
+        xlim(ax, xLimits);
+        ylim(ax, yLimits);
+
+        gray = [0.78, 0.78, 0.78];
+        orange = [1.00, 0.55, 0.12];
+        blue = [0.15, 0.50, 0.95];
+
+        % Gray: excluded frequencies.
+        intervals = [ ...
+                         -obj.fs / 2, -obj.f2; ...
+                         -obj.f1, obj.f1; ...
+                         obj.f2, obj.fs / 2];
+
+        shade_color = repmat(gray, 3, 1);
+        alphas = repmat(0.32, 3, 1);
+
+        % Orange: LF bands.
+        if ~isempty(obj.fi1)
+
+            intervals = [intervals; ...
+                             -obj.fi1, -obj.f1; ...
+                             obj.f1, obj.fi1];
+
+            shade_color = [shade_color; orange; orange];
+            alphas = [alphas; 0.20; 0.20];
+
+        end
+
+        % Blue: HF bands.
+        if ~isempty(obj.fi2)
+
+            intervals = [intervals; ...
+                             -obj.f2, -obj.fi2; ...
+                             obj.fi2, obj.f2];
+
+            shade_color = [shade_color; blue; blue];
+            alphas = [alphas; 0.16; 0.16];
+
+        end
+
+        wasHeld = ishold(ax);
+        hold(ax, 'on');
+
+        for j = 1:size(intervals, 1)
+
+            left = max(intervals(j, 1), xLimits(1));
+            right = min(intervals(j, 2), xLimits(2));
+
+            if right <= left
+                continue;
+            end
+
+            h = patch(ax, ...
+                [left, right, right, left], ...
+                [yLimits(1), yLimits(1), ...
+                 yLimits(2), yLimits(2)], ...
+                shade_color(j, :), ...
+                'FaceAlpha', alphas(j), ...
+                'EdgeColor', 'none', ...
+                'HandleVisibility', 'off', ...
+                'HitTest', 'off');
+
+            if isgraphics(h)
+                uistack(h, 'bottom');
+            end
+
+        end
+
+        set(ax, 'Layer', 'top');
+
+        if ~wasHeld
+            hold(ax, 'off');
+        end
+
+    end
+
+    function releaseSpectrumAxes(obj)
+
+        if ~isempty(obj.axPlot) && isgraphics(obj.axPlot)
+            hold(obj.axPlot, 'off');
+        end
+
+        if ~isempty(obj.axFits) && isgraphics(obj.axFits)
+            hold(obj.axFits, 'off');
+        end
 
     end
 
     function makeOuterDiaphragmReference(obj)
-        % This function can be implemented to create a reference spectrum from an outer diaphragm region
-        % It can be called when the user clicks a button to set the reference spectrum for fitting
 
-        [Nx, Ny, batchSize] = size(obj.SH_processed);
-        outerMask = ~diskMask(Ny, Nx, 1.1);
-        largeMask = repmat(outerMask, [1 1 batchSize]);
-        SH_mask = obj.SH_processed .* largeMask;
-        obj.outerReference = squeeze(sum(SH_mask, [1 2])) / nnz(outerMask);
+        Ny = size(obj.SH_processed, 1);
+        Nx = size(obj.SH_processed, 2);
+        nFreq = size(obj.SH_processed, 3);
+
+        % Keep the diskMask convention used by the existing project.
+        outerMask = ~diskMask(Nx, Ny, 1.1);
+
+        assert(isequal(size(outerMask), [Ny, Nx]), ...
+            ['diskMask must return a matrix of size [%d %d], ' ...
+         'matching the spatial dimensions of SH.'], Ny, Nx);
+
+        outerMask = logical(outerMask);
+
+        assert(any(outerMask(:)), ...
+        'The outer reference mask is empty.');
+
+        spatialSpectra = reshape( ...
+            obj.SH_processed, [], nFreq);
+
+        obj.outerReference = double(mean( ...
+            spatialSpectra(outerMask(:), :), 1).');
 
     end
 
-    function closeFigure(obj)
-        % Clean up when figure is closed
-        delete(obj.fig);
+    function saveSpectra(obj)
+
+        if obj.isClosing ...
+                || isempty(obj.axPlot) ...
+                || isempty(obj.axFits) ...
+                || ~isgraphics(obj.axPlot) ...
+                || ~isgraphics(obj.axFits)
+
+            return;
+
+        end
+
+        [filename, pathname] = uiputfile( ...
+            {'*.png', 'PNG image'}, ...
+            'Save spectra and fits', ...
+        'spectra.png');
+
+        if isequal(filename, 0) || obj.isClosing
+            return;
+        end
+
+        [~, name, ~] = fileparts(filename);
+        outputPath = fullfile(pathname, [name, '.png']);
+
+        exportFigure = figure( ...
+            'Visible', 'off', ...
+            'Color', 'white', ...
+            'Position', [100, 100, 1000, 850]);
+
+        cleanup = onCleanup( ...
+            @() delete(exportFigure)); %#ok<NASGU>
+
+        % Copy both axes together with their associated legends.
+        sourceObjects = [obj.axPlot, obj.axFits];
+
+        if ~isempty(obj.axPlot.Legend) ...
+                && isgraphics(obj.axPlot.Legend)
+
+            sourceObjects = [ ...
+                                 sourceObjects, obj.axPlot.Legend];
+
+        end
+
+        if ~isempty(obj.axFits.Legend) ...
+                && isgraphics(obj.axFits.Legend)
+
+            sourceObjects = [ ...
+                                 sourceObjects, obj.axFits.Legend];
+
+        end
+
+        copiedObjects = copyobj(sourceObjects, exportFigure);
+
+        set(copiedObjects(1), ...
+            'Units', 'normalized', ...
+            'Position', [0.10, 0.57, 0.86, 0.36]);
+
+        set(copiedObjects(2), ...
+            'Units', 'normalized', ...
+            'Position', [0.10, 0.11, 0.86, 0.34]);
+
+        % Restore interactive linking in the exported figure.
+        linkaxes(copiedObjects(1:2), 'xy');
+
+        exportgraphics(exportFigure, outputPath, ...
+            'Resolution', 300);
+
+        fprintf('Figure saved to:\n%s\n', outputPath);
+
+    end
+
+    function closeFigure(obj, src, ~)
+
+        if obj.isClosing
+            return;
+        end
+
+        obj.isClosing = true;
+
+        obj.deleteROIListeners();
+
+        if ~isempty(src) && isgraphics(src)
+            delete(src);
+        end
+
+        obj.fig = [];
+
+    end
+
+end
+
+methods (Access = private)
+
+    function finishSpectrumUpdate(obj)
+
+        % Release the lock even if restoring the axes raises an error.
+        lockCleanup = onCleanup( ...
+            @() obj.unlockSpectrumUpdate()); %#ok<NASGU>
+
+        obj.releaseSpectrumAxes();
+
+    end
+
+    function unlockSpectrumUpdate(obj)
+
+        obj.isUpdatingSpectrum = false;
+
+    end
+
+    function unlinkSpectrumAxes(obj)
+
+        if ~isempty(obj.spectrumAxesLink)
+
+            if isvalid(obj.spectrumAxesLink)
+                delete(obj.spectrumAxesLink);
+            end
+
+            obj.spectrumAxesLink = [];
+
+        end
+
+    end
+
+    function synchronizeSpectrumAxes(obj)
+
+        axTop = obj.axPlot;
+        axBottom = obj.axFits;
+
+        if isempty(axTop) || isempty(axBottom) ...
+                || ~isgraphics(axTop) || ~isgraphics(axBottom)
+
+            return;
+
+        end
+
+        % Remove the previous explicitly managed link.
+        obj.unlinkSpectrumAxes();
+
+        % Both panels use the frequency range configured on the upper axis.
+        commonXLimits = xlim(axTop);
+
+        % Include the vertical extents of both panels.
+        topYLimits = ylim(axTop);
+        bottomYLimits = ylim(axBottom);
+
+        commonYLimits = [ ...
+                             min(topYLimits(1), bottomYLimits(1)), ...
+                             max(topYLimits(2), bottomYLimits(2))];
+
+        set([axTop, axBottom], ...
+            'XLim', commonXLimits, ...
+            'YLim', commonYLimits);
+
+        % Keep this object alive in the class property.
+        obj.spectrumAxesLink = linkprop( ...
+            [axTop, axBottom], {'XLim', 'YLim'});
+
     end
 
 end

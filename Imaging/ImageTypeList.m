@@ -45,6 +45,8 @@ properties
     band_ratio
     color_band_ratio
     entropy
+    negentropy
+    spectral_nonuniformity
 
     % --- Frequency buckets ----------------------------------------------
     buckets
@@ -105,6 +107,8 @@ methods
         obj.band_ratio = ImageType('energy_ratio');
         obj.color_band_ratio = ImageType('color_energy_ratio');
         obj.entropy = ImageType('entropy');
+        obj.negentropy = ImageType('negentropy');
+        obj.spectral_nonuniformity = ImageType('spectral_nonuniformity');
 
         % Buckets
         obj.buckets = ImageType('buckets', struct('intervals_0', [], 'intervals_1', [], ...
@@ -257,6 +261,13 @@ methods
             obj.broadening.image = obj.renderBroadeningPlot(SH_mod, Params, fs);
         end
 
+        if obj.spectral_nonuniformity.is_selected
+
+            obj.spectral_nonuniformity.image = spectral_nonuniformity( ...
+                SH_mod, f1, f2, fs, batchSize);
+
+        end
+
         % --- Raw SH output ---------------------------------------------
         % Derived images remain full resolution. Only SH and SH_avg are
         % spatially block-averaged before storage/export. The frequency
@@ -359,7 +370,7 @@ methods
         end
 
         if obj.LF_M0.is_selected
-            obj.LF_M0.image = moment0(SH_mod, fr1, fr2, fs, batchSize);
+            obj.LF_M0.image = moment0(SH_mod, f1, fr1, fs, batchSize);
         end
 
         % --- Spectral statistics ---------------------------------------
@@ -377,6 +388,11 @@ methods
 
         if obj.entropy.is_selected
             obj.entropy.image = spectral_entropy(SH_mod, f1, f2, fs, batchSize);
+        end
+
+        if obj.negentropy.is_selected
+            obj.negentropy.image = spectral_negentropy( ...
+                SH_mod, f1, f2, fs, batchSize);
         end
 
         % --- Frequency buckets -----------------------------------------
