@@ -1231,6 +1231,7 @@ config.moment_1 = struct('name', 'moment1', 'opts', defaultOpts);
 config.moment_2 = struct('name', 'moment2', 'opts', defaultOpts);
 config.LF_M0 = struct('name', 'LF_M0', 'opts', defaultOpts);
 config.HF_M0 = struct('name', 'HF_M0', 'opts', defaultOpts);
+config.gaussian_width = struct('name', 'gaussian_width', 'opts', defaultOpts);
 
 opts_pd = defaultOpts;
 opts_pd.export_raw = false;

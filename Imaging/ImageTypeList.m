@@ -47,6 +47,7 @@ properties
     entropy
     negentropy
     spectral_nonuniformity
+    gaussian_w
 
     % --- Frequency buckets ----------------------------------------------
     buckets
@@ -109,6 +110,7 @@ methods
         obj.entropy = ImageType('entropy');
         obj.negentropy = ImageType('negentropy');
         obj.spectral_nonuniformity = ImageType('spectral_nonuniformity');
+        obj.gaussian_w = ImageType('gaussian_w');
 
         % Buckets
         obj.buckets = ImageType('buckets', struct('intervals_0', [], 'intervals_1', [], ...
@@ -393,6 +395,10 @@ methods
         if obj.negentropy.is_selected
             obj.negentropy.image = spectral_negentropy( ...
                 SH_mod, f1, f2, fs, batchSize);
+        end
+
+        if obj.gaussian_w.is_selected
+            obj.gaussian_w.image = gaussian_width(SH_mod, 0, fs/2, fs, batchSize);
         end
 
         % --- Frequency buckets -----------------------------------------

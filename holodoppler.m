@@ -9,6 +9,8 @@ properties (Access = private)
     % ---- top-level layout ----
     RootGrid matlab.ui.container.GridLayout
     Image matlab.ui.control.Image
+    ImageDisplayPanel matlab.ui.container.Panel
+    ImageTypeAnnotation matlab.ui.control.Label
 
     % ---- file selection panel (left column) ----
     FileselectionPanel matlab.ui.container.Panel
@@ -305,8 +307,10 @@ methods (Access = private)
         if ~isempty(Images)
             app.Image.ImageSource = toImageSource(Images{1}, app);
             app.MenuIndex = 1;
+            app.updateImageTypeAnnotation(1);
         else
             app.Image.ImageSource = '';
+            app.updateImageTypeAnnotation([]);
         end
 
         % A successful render means we can now save the preview
@@ -350,8 +354,11 @@ methods (Access = private)
 
         if ~isempty(imgs)
             app.Image.ImageSource = toImageSource(imgs{randsample(numel(imgs), 1)}, app);
+            app.MenuIndex = 1;
+            app.updateImageTypeAnnotation(1);
         else
             app.Image.ImageSource = '';
+            app.updateImageTypeAnnotation([]);
         end
 
     end
@@ -427,8 +434,9 @@ methods (Access = private)
     function SelectMenu(app, num, ~)
         imgs = app.HD.render.getImages(app.HD.params.imageTypes);
 
-        if isempty(imgs) || isempty(imgs{num})
+        if isempty(imgs) || num > numel(imgs) || isempty(imgs{num})
             app.Image.ImageSource = '';
+            app.updateImageTypeAnnotation([]);
             return
         end
 
@@ -442,6 +450,7 @@ methods (Access = private)
 
         app.Image.ImageSource = toImageSource(image, app);
         app.MenuIndex = num;
+        app.updateImageTypeAnnotation(num);
     end
 
     function ViewAllMenuSelected(app, ~)
@@ -549,6 +558,86 @@ end % callbacks methods block
 % Private helper methods (GUI sync, UI enable logic, drawer operations)
 % =========================================================================
 methods (Access = private)
+
+    % --- Display-only image type overlay ---------------------------------
+
+    function updateImageTypeAnnotation(app, index)
+        if isempty(app.ImageTypeAnnotation) || ...
+                ~isvalid(app.ImageTypeAnnotation)
+            return;
+        end
+
+        app.ImageTypeAnnotation.Visible = 'off';
+        app.ImageTypeAnnotation.Text = '';
+
+        if isempty(index) || isempty(app.HD) || ...
+                isempty(app.Image.ImageSource)
+            return;
+        end
+
+        imageTypes = app.HD.params.imageTypes;
+        if index < 1 || index > numel(imageTypes)
+            return;
+        end
+
+        if iscell(imageTypes)
+            imageType = imageTypes{index};
+        else
+            imageType = imageTypes(index);
+        end
+
+        % No TeX interpretation: underscores are displayed literally.
+        app.ImageTypeAnnotation.Text = char(string(imageType));
+        app.layoutImageDisplay();
+        app.ImageTypeAnnotation.Visible = 'on';
+    end
+
+    function layoutImageDisplay(app, ~)
+        if isempty(app.ImageDisplayPanel) || ...
+                ~isvalid(app.ImageDisplayPanel) || ...
+                isempty(app.Image) || ~isvalid(app.Image)
+            return;
+        end
+
+        panelPosition = app.ImageDisplayPanel.InnerPosition;
+        panelWidth = max(1, panelPosition(3));
+        panelHeight = max(1, panelPosition(4));
+
+        app.Image.Position = [1 1 panelWidth panelHeight];
+
+        if isempty(app.ImageTypeAnnotation) || ...
+                ~isvalid(app.ImageTypeAnnotation)
+            return;
+        end
+
+        % Anchor to the visible image, accounting for fit/letterboxing.
+        imageLeft = 1;
+        imageBottom = 1;
+        imageWidth = panelWidth;
+        imageHeight = panelHeight;
+        imageSource = app.Image.ImageSource;
+
+        if (isnumeric(imageSource) || islogical(imageSource)) && ...
+                ~isempty(imageSource)
+            sourceHeight = size(imageSource, 1);
+            sourceWidth = size(imageSource, 2);
+            scale = min(panelWidth / sourceWidth, ...
+                panelHeight / sourceHeight);
+            imageWidth = sourceWidth * scale;
+            imageHeight = sourceHeight * scale;
+            imageLeft = 1 + (panelWidth - imageWidth) / 2;
+            imageBottom = 1 + (panelHeight - imageHeight) / 2;
+        end
+
+        margin = min(10, max(0, (min(imageWidth, imageHeight) - 1) / 4));
+        labelHeight = min(26, max(1, imageHeight - 2 * margin));
+        labelWidth = min(max(1, imageWidth - 2 * margin), ...
+            max(80, 16 + 9 * numel(app.ImageTypeAnnotation.Text)));
+
+        app.ImageTypeAnnotation.Position = [ ...
+            imageLeft + margin, imageBottom + margin, ...
+            labelWidth, labelHeight];
+    end
 
     % --- GUI <-> class sync (replaces external classtogui / guitoclass) ----
 
@@ -1471,14 +1560,37 @@ methods (Access = private)
 
     % -----------------------------------------------------------------------
     function createImageViewsAndMenus(app)
-        app.Image = uiimage(app.RootGrid);
-        app.Image.Layout.Row = 1;
-        app.Image.Layout.Column = [2 3];
+        % Image and annotation share a borderless, resizable container.
+        app.ImageDisplayPanel = uipanel(app.RootGrid, ...
+            'BorderType', 'none', ...
+            'BackgroundColor', [0.2 0.2 0.2], ...
+            'AutoResizeChildren', 'off');
+        app.ImageDisplayPanel.Layout.Row = 1;
+        app.ImageDisplayPanel.Layout.Column = [2 3];
+
+        app.Image = uiimage(app.ImageDisplayPanel, ...
+            'ScaleMethod', 'fit');
+
+        % Created after the image so that the label overlays it.
+        app.ImageTypeAnnotation = uilabel(app.ImageDisplayPanel, ...
+            'Text', '', ...
+            'Interpreter', 'none', ...
+            'FontColor', [1 1 1], ...
+            'BackgroundColor', [0 0 0], ...
+            'FontWeight', 'bold', ...
+            'FontSize', 12, ...
+            'HorizontalAlignment', 'left', ...
+            'VerticalAlignment', 'center', ...
+            'Visible', 'off');
+
+        app.ImageDisplayPanel.SizeChangedFcn = ...
+            @(~, ~) app.layoutImageDisplay();
+        app.layoutImageDisplay();
 
         app.RightClickImageContextMenu = uicontextmenu(app.HoloDopplerUIFigure);
 
         app.NextMenu = uimenu(app.RightClickImageContextMenu);
-        app.NextMenu.MenuSelectedFcn = createCallbackFcn(app, @NextMenuSelected, true);
+        app.NextMenu.MenuSelectedFcn = @(~, ~) app.changeMenu('next');
         app.NextMenu.Text = 'Next';
 
         app.ViewAllMenu = uimenu(app.RightClickImageContextMenu);
@@ -1486,6 +1598,7 @@ methods (Access = private)
         app.ViewAllMenu.Text = 'View all images';
 
         app.Image.ContextMenu = app.RightClickImageContextMenu;
+        app.ImageTypeAnnotation.ContextMenu = app.RightClickImageContextMenu;
     end
 
 end % createComponents methods block
