@@ -7,18 +7,15 @@
     "moment_0",
     "moment_1",
     "moment_2",
-    "band_ratio",
-    "broadening",
-    "HF_M0",
-    "LF_M0"
+    "gaussian_w"
   ],
   "imageRegistration": true,
   "spatialTransform": "Fresnel",
-  "frequencyRange1": 6,
+  "frequencyRange1": 3,
   "frequencyRange2": 18.3,
   "spatialFilter": false,
   "svd_filter": true,
-  "svdThreshold": 40,
+  "svdThreshold": 10,
   "svdStride": 1,
   "timeTransform": "FFT",
   "flatfield_gw": 35,
@@ -26,7 +23,7 @@
   "flip_y": false,
   "flip_x": true,
   "square": true,
-  "frequencyRangeBandRatio1": 3,
+  "frequencyRangeBandRatio1": 6,
   "frequencyRangeBandRatio2": 9,
-  "CornerCompensation": true
+  "CornerCompensation": false
 }
