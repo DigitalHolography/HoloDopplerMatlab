@@ -45,14 +45,13 @@ properties
     band_ratio
     color_band_ratio
     entropy
-    negentropy
-    spectral_nonuniformity
 
     % --- Gaussian estimates ---------------------------------------------
     gaussian_w
     sigma
     h1
     h2
+    harmonic_spectrum
 
     % --- Frequency buckets ----------------------------------------------
     buckets
@@ -69,12 +68,26 @@ methods
     function obj = ImageTypeList()
 
         % Doppler
-        obj.power_Doppler = ImageType('power', struct('M0sqrt', []));
+        obj.power_Doppler = ImageType('power', ...
+            struct('M0sqrt', []));
         obj.power_1_Doppler = ImageType('power1');
         obj.power_2_Doppler = ImageType('power2');
-        obj.color_Doppler = ImageType('color', struct('freq_low', [], 'freq_high', []));
-        obj.directional_Doppler = ImageType('directional', struct('M0_pos', [], 'M0_neg', []));
+
+        obj.color_Doppler = ImageType('color', ...
+            struct('freq_low', [], 'freq_high', []));
+        obj.directional_Doppler = ImageType('directional', ...
+            struct('M0_pos', [], 'M0_neg', []));
+
         obj.broadening = ImageType('broadening');
+        obj.harmonic_spectrum = ImageType('harmonic_spectrum', struct( ...
+            'axis', [], ...
+            'axisLabel', [], ...
+            'inputAxis', [], ...
+            'inputAxisLabel', [], ...
+            'fft', [], ...
+            'harmonicIndices', [], ...
+            'harmonicCoefficients', []));
+
         obj.power_Doppler_wiener = ImageType('power_wiener');
         obj.power_adapt = ImageType('power_adapt');
 
@@ -113,8 +126,6 @@ methods
         obj.band_ratio = ImageType('energy_ratio');
         obj.color_band_ratio = ImageType('color_energy_ratio');
         obj.entropy = ImageType('entropy');
-        obj.negentropy = ImageType('negentropy');
-        obj.spectral_nonuniformity = ImageType('spectral_nonuniformity');
         obj.gaussian_w = ImageType('gaussian_w');
         obj.sigma = ImageType('sigma');
         obj.h1 = ImageType('h1');
@@ -271,13 +282,6 @@ methods
             obj.broadening.image = obj.renderBroadeningPlot(SH_mod, Params, fs);
         end
 
-        if obj.spectral_nonuniformity.is_selected
-
-            obj.spectral_nonuniformity.image = spectral_nonuniformity( ...
-                SH_mod, f1, f2, fs, batchSize);
-
-        end
-
         % --- Raw SH output ---------------------------------------------
         % Derived images remain full resolution. Only SH and SH_avg are
         % spatially block-averaged before storage/export. The frequency
@@ -400,17 +404,52 @@ methods
             obj.entropy.image = spectral_entropy(SH_mod, f1, f2, fs, batchSize);
         end
 
-        if obj.negentropy.is_selected
-            obj.negentropy.image = spectral_negentropy( ...
-                SH_mod, f1, f2, fs, batchSize);
-        end
+        % Compute the Gaussian estimates if any associated image is requested.
+        needDiagnostic = obj.harmonic_spectrum.is_selected;
 
-        if obj.gaussian_w.is_selected
-            [I_FWHM, I_sigma, I_h1, I_h2] = gaussian_width(SH_mod, 0, fs/2, fs, batchSize);
-            obj.gaussian_w.image = I_FWHM;
-            obj.sigma.image = I_sigma;
-            obj.h1.image = I_h1;
-            obj.h2.image = I_h2;
+        needGaussian = ...
+            obj.gaussian_w.is_selected || ...
+            obj.sigma.is_selected || ...
+            obj.h1.is_selected || ...
+            obj.h2.is_selected || ...
+            needDiagnostic;
+
+        if needGaussian
+
+            if needDiagnostic
+                [I_FWHM, I_sigma, I_h1, I_h2, diagnostic] = ...
+                    gaussian_width( ...
+                    SH_mod, 0, fs / 2, fs, batchSize);
+            else
+                [I_FWHM, I_sigma, I_h1, I_h2] = ...
+                    gaussian_width( ...
+                    SH_mod, 0, fs / 2, fs, batchSize);
+            end
+
+            if obj.gaussian_w.is_selected
+                obj.gaussian_w.image = I_FWHM;
+            end
+
+            if obj.sigma.is_selected
+                obj.sigma.image = I_sigma;
+            end
+
+            if obj.h1.is_selected
+                obj.h1.image = I_h1;
+            end
+
+            if obj.h2.is_selected
+                obj.h2.image = I_h2;
+            end
+
+            if needDiagnostic
+                obj.setHarmonicSpectrum( ...
+                    diagnostic.fft, ...
+                    diagnostic.axis, ...
+                    diagnostic.harmonicIndices, ...
+                    diagnostic.axisLabel);
+            end
+
         end
 
         % --- Frequency buckets -----------------------------------------
@@ -584,6 +623,49 @@ methods (Access = private)
             MEdisp(E);
         end
 
+    end
+
+    function setHarmonicSpectrum(obj, fftValues, spectralAxis, ...
+            harmonicIndices, axisLabel)
+        % SETHARMONICSPECTRUM Store and display the FFT used for h1 and h2.
+        %
+        % fftValues:
+        %   Exact complex FFT vector used by the harmonic calculation.
+        %
+        % spectralAxis:
+        %   Coordinates corresponding to fftValues, in the same order.
+        %
+        % harmonicIndices:
+        %   MATLAB indices [indexH1 indexH2] into fftValues.
+        %
+        % axisLabel:
+        %   For example 'Frequency (Hz)' or 'Harmonic order'.
+        %
+        % No FFT, fftshift, amplitude normalization or averaging is applied here.
+
+        slot = obj.harmonic_spectrum;
+
+        if ~slot.is_selected
+            return;
+        end
+
+        if nargin < 5
+            axisLabel = 'Spectral coordinate';
+        end
+
+        % Clear previous results before attempting a new diagnostic.
+        slot.image = [];
+        slot.parameters = struct( ...
+            'axis', [], ...
+            'axisLabel', [], ...
+            'inputAxis', [], ...
+            'inputAxisLabel', [], ...
+            'fft', [], ...
+            'harmonicIndices', [], ...
+            'harmonicCoefficients', []);
+
+        [slot.image, slot.parameters] = renderHarmonicSpectrum( ...
+            fftValues, spectralAxis, harmonicIndices, axisLabel);
     end
 
     % ------------------------------------------------------------------

@@ -116,7 +116,6 @@ properties (Access = public)
 end
 
 properties (Access = private)
-    fileLoaded % was file_loaded
     OriginalPath char % path before startupFcn adds Tools folder
     MenuIndex double = 1; % which image type is currently shown in the main view
 end
@@ -129,71 +128,101 @@ methods (Access = private)
     % --- Startup / lifecycle -----------------------------------------------
 
     function startupFcn(app)
-        logFile = fullfile(tempdir, ['matlab_log_' char(datetime('now', 'Format', 'yyyyMMdd_HHmmss')) '.txt']);
-        diary(logFile);
-        app.OriginalPath = path;
-
-        % Determine version
-        version = 'unknown';
-
-        if isfile(fullfile(fileparts(mfilename('fullpath')), 'version.txt'))
-            v = readlines('version.txt');
-            version = char(v(1));
-        else
-            warning('holodoppler:noVersionFile', 'version.txt not found — version will be shown as unknown.');
-        end
-
-        versionStr = ['HoloDoppler ' version];
-
-        % Git info (branch + commit hash)
-        gitInfo = '';
-
         appRoot = fileparts(mfilename('fullpath'));
 
-        if exist(fullfile(appRoot, '.git'), 'dir')
-            [~, branch] = system('git rev-parse --abbrev-ref HEAD');
-            branch = strtrim(branch);
-            [~, hash] = system('git rev-parse --short HEAD');
-            hash = strtrim(hash);
-            gitInfo = sprintf('Branch: %s | Commit: %s', branch, hash);
-        end
+        app.OriginalPath = path;
+        addpath(fullfile(appRoot, 'Tools'));
 
+        logName = sprintf('holodoppler_%s.txt', ...
+            char(datetime('now', 'Format', 'yyyyMMdd_HHmmss')));
+        diary(fullfile(tempdir, logName));
+
+        [versionStr, gitInfo] = app.getVersionInfo(appRoot);
         app.HoloDopplerUIFigure.Name = versionStr;
 
-        % Add Tools folder
-        addpath(fullfile(fileparts(mfilename('fullpath')), 'Tools'));
+        app.HD = HoloDopplerClass();
+        app.syncGuiFromClass();
+        app.updateButtonStates();
 
-        % Show splash screen (via external function)
-        if isempty(gitInfo)
-            displaySplashScreen(versionStr);
-        else
+        % The splash screen must never prevent application startup.
+        try
             displaySplashScreen(versionStr, gitInfo);
+        catch ME
+            warning('holodoppler:SplashScreenFailed', ...
+                'Splash screen skipped: %s', ME.message);
         end
 
-        app.HD = HoloDopplerClass();
-        app.updateButtonStates();
     end
 
+    function [versionStr, gitInfo] = getVersionInfo(app, appRoot)
+        version = "unknown";
+        versionFile = fullfile(appRoot, 'version.txt');
+
+        if isfile(versionFile)
+            lines = strip(readlines(versionFile));
+            lines = lines(strlength(lines) > 0);
+
+            if ~isempty(lines)
+                version = lines(1);
+            end
+
+        end
+
+        versionStr = char("HoloDoppler " + version);
+        gitInfo = '';
+
+        % .git can be either a directory or a file, e.g. in a worktree.
+        gitPath = fullfile(appRoot, '.git');
+
+        if ~isfolder(gitPath) && ~isfile(gitPath)
+            return;
+        end
+
+        [branchOK, branch] = app.readGit(appRoot, ...
+        'rev-parse --abbrev-ref HEAD');
+        [commitOK, commit] = app.readGit(appRoot, ...
+        'rev-parse --short HEAD');
+
+        if branchOK && commitOK
+            gitInfo = sprintf('Branch: %s | Commit: %s', branch, commit);
+        end
+
+    end
+
+    function [ok, output] = readGit(~, appRoot, arguments)
+        command = sprintf('git -C "%s" %s', appRoot, arguments);
+        [status, output] = system(command);
+        ok = status == 0;
+        output = strtrim(output);
+    end
+
+    function ready = hasFile(app)
+        ready = ~isempty(app.HD) && ~isempty(app.HD.file);
+    end
+
+    % Private callback
     function HoloDopplerUIFigureCloseRequest(app, ~)
-        diary off;
-        delete(app.HoloDopplerUIFigure);
+        delete(app);
     end
 
     function HoloDopplerUIFigureWindowKeyPress(app, event)
 
-        if app.fileLoaded
+        if ~app.hasFile()
+            return;
+        end
 
-            switch event.Key
-                case 'return'
-                    app.RenderPreviewButtonPushed();
-                case 'space'
-                    app.ViewAllMenuSelected();
-                case 'leftarrow'
-                    app.changeMenu('previous');
-                case 'rightarrow'
-                    app.changeMenu('next');
-            end
+        switch event.Key
+            case 'return'
+                app.RenderPreviewButtonPushed();
 
+            case 'space'
+                app.ViewAllMenuSelected();
+
+            case 'leftarrow'
+                app.changeMenu('previous');
+
+            case 'rightarrow'
+                app.changeMenu('next');
         end
 
     end
@@ -201,49 +230,46 @@ methods (Access = private)
     % --- File I/O callbacks ------------------------------------------------
 
     function LoadfileButtonPushed(app, ~)
-        % Dummy off-screen figure prevents uigetfile from minimising the main GUI
-        f = figure('Position', [-200 -200 1 1], 'Visible', 'off');
-        cleanupObj = onCleanup(@() delete(f));
-
-        % Define the file filter: description and extensions
-        filters = { ...
-                       '*.cine;*.holo', 'Supported Video Files (*.cine, *.holo)'; ...
-                       '*.cine', 'Cine Files (*.cine)'; ...
-                       '*.holo', 'Holo Files (*.holo)'; ...
+        filters = {
+                   '*.cine;*.holo', 'Supported video files (*.cine, *.holo)'
+                   '*.cine', 'Cine files (*.cine)'
+                   '*.holo', 'Holo files (*.holo)'
                    };
 
-        if isempty(app.HD.file)
-            [fname, fpath] = uigetfile(filters, 'Select a video file');
-        else
-            % Get the directory from the full file path – safer than .dir
-            currentDir = fileparts(app.HD.file.path);
-            [fname, fpath] = uigetfile(filters, 'Select a video file', fullfile(currentDir, ''));
+        initialFolder = pwd;
+
+        if app.hasFile()
+            initialFolder = fileparts(app.HD.file.path);
         end
 
-        if isequal(fname, 0)
-            return
+        [name, folder] = uigetfile( ...
+            filters, 'Select a video file', ...
+            fullfile(initialFolder, '*.*'));
+
+        if isequal(name, 0)
+            return;
         end
+
+        app.fileLoadedLamp.Color = [1 0.5 0];
+        drawnow;
 
         try
-            app.fileLoadedLamp.Color = [1 0.5 0];
-            drawnow;
-            app.HD.LoadFile(fullfile(fpath, fname));
+            app.HD.LoadFile(fullfile(folder, name));
             app.syncGuiFromClass();
-            app.RenderPreviewButtonPushed();
-            app.fileLoaded = 1;
-            app.fileLoadedLamp.Color = [0 1 0];
+
             app.FileNameField.Value = app.HD.file.name;
+            app.fileLoadedLamp.Color = [0 1 0];
+
         catch ME
-            MEdisp(ME);
-            app.fileLoaded = 0;
             app.fileLoadedLamp.Color = [1 0 0];
-            drawnow;
-            app.FileNameField.Value = '';
+            app.updateButtonStates();
+            MEdisp(ME);
+            return;
         end
 
         app.updateButtonStates();
         app.positioninfileSliderValueChanged();
-        app.refreshClass();
+        app.RenderPreviewButtonPushed();
     end
 
     function LoadConfigButtonPushed(app, ~)
@@ -339,8 +365,25 @@ methods (Access = private)
     % Sync every widget value into the HD class, then update enable states.
     % Connected to ~50 component ValueChanged callbacks.
     function refreshClass(app, ~)
+
+        if isempty(app.HD)
+            return;
+        end
+
         app.syncClassFromGui();
-        app.updateTimeTransformControls();
+        app.updateButtonStates();
+    end
+
+    function registrationCheckBoxValueChanged(app, ~)
+        app.refreshClass();
+    end
+
+    function spatialFilterCheckBoxValueChanged(app, ~)
+        app.refreshClass();
+    end
+
+    function svdFilterCheckBoxValueChanged(app, ~)
+        app.refreshClass();
     end
 
     function RefreshAppButtonPushed(app, ~)
@@ -353,7 +396,7 @@ methods (Access = private)
         imgs = app.HD.render.getImages(app.HD.params.imageTypes(1));
 
         if ~isempty(imgs)
-            app.Image.ImageSource = toImageSource(imgs{randsample(numel(imgs), 1)}, app);
+            app.Image.ImageSource = toImageSource(imgs{randi(numel(imgs))}, app);
             app.MenuIndex = 1;
             app.updateImageTypeAnnotation(1);
         else
@@ -364,71 +407,77 @@ methods (Access = private)
     end
 
     function AutofocusButtonPushed(app, ~)
-    % Remplace le balayage de spatialPropagation par l'estimation du defocus
-    % Shack-Hartmann / Zernike Noll 4, puis relance l'aperçu corrigé.
+        % Remplace le balayage de spatialPropagation par l'estimation du defocus
+        % Shack-Hartmann / Zernike Noll 4, puis relance l'aperçu corrigé.
 
-    app.AutofocusButton.Enable = 'off';
-    buttonCleanup = onCleanup( ...
-        @() set(app.AutofocusButton, 'Enable', 'on')); %#ok<NASGU>
-    app.RenderPreviewLamp.Color = [1 0.5 0];
-    drawnow;
+        app.AutofocusButton.Enable = 'off';
+        buttonCleanup = onCleanup( ...
+            @() set(app.AutofocusButton, 'Enable', 'on')); %#ok<NASGU>
+        app.RenderPreviewLamp.Color = [1 0.5 0];
+        drawnow;
 
-    try
-        app.refreshClass();
+        try
+            app.refreshClass();
 
-        if ~strcmpi(strtrim(app.HD.params.spatialTransform), ...
+            if ~strcmpi(strtrim(app.HD.params.spatialTransform), ...
                 'Angular spectrum')
-            error('holodoppler:AutofocusRequiresAngularSpectrum', ...
-                ['Select "Angular spectrum" before running the ', ...
+                error('holodoppler:AutofocusRequiresAngularSpectrum', ...
+                    ['Select "Angular spectrum" before running the ', ...
                  'Zernike autofocus.']);
+            end
+
+            % Charge/rend le batch de reference courant dans app.HD.render.
+            app.HD.PreviewRendering();
+
+            [c4, diagnostic] = autofocusDefocus( ...
+                app.HD.render, ...
+                app.HD.params, ...
+                app.HD.file, ...
+                NumSubapertures = [5 5], ...
+                ZernikeModes = 4, ...
+                ShowDiagnostic = true);
+
+            % Passage obligatoire par setParams : HDParamSchema reste la source
+            % unique de validation des parametres de rendu.
+            app.HD.setParams(struct( ...
+                'defocusCorrection', true, ...
+                'defocusCoefficientRad', c4, ...
+                'defocusPupilRadius', 2));
+
+            % Diagnostic hors des parametres de rendu.
+            app.HD.autofocusResult = diagnostic;
+
+            app.syncGuiFromClass();
+            app.RenderPreviewButtonPushed();
+            app.RenderPreviewLamp.Color = [0 1 0];
+
+        catch ME
+            app.RenderPreviewLamp.Color = [1 0 0];
+            MEdisp(ME);
         end
 
-        % Charge/rend le batch de reference courant dans app.HD.render.
-        app.HD.PreviewRendering();
-
-        [c4, diagnostic] = autofocusDefocus( ...
-            app.HD.render, ...
-            app.HD.params, ...
-            app.HD.file, ...
-            NumSubapertures=[5 5], ...
-            ZernikeModes=4, ...
-            ShowDiagnostic=true);
-
-        % Passage obligatoire par setParams : HDParamSchema reste la source
-        % unique de validation des parametres de rendu.
-        app.HD.setParams(struct( ...
-            'defocusCorrection', true, ...
-            'defocusCoefficientRad', c4, ...
-            'defocusPupilRadius', 2));
-
-        % Diagnostic hors des parametres de rendu.
-        app.HD.autofocusResult = diagnostic;
-
-        app.syncGuiFromClass();
-        app.RenderPreviewButtonPushed();
-        app.RenderPreviewLamp.Color = [0 1 0];
-
-    catch ME
-        app.RenderPreviewLamp.Color = [1 0 0];
-        MEdisp(ME);
-    end
     end
 
     % --- Context menu / image navigation -----------------------------------
 
     function changeMenu(app, direction)
+        count = numel(app.HD.params.imageTypes);
 
-        idx = app.MenuIndex;
-        imagesTypes = app.HD.params.imageTypes;
-
-        if direction == "next"
-            num = mod(idx, length(imagesTypes)) + 1;
-            app.SelectMenu(num);
-        elseif direction == "previous"
-            num = mod(idx - 2, length(imagesTypes)) + 1;
-            app.SelectMenu(num);
+        if count == 0
+            return;
         end
 
+        switch string(direction)
+            case "next"
+                step = 1;
+            case "previous"
+                step = -1;
+            otherwise
+                return;
+        end
+
+        index = mod(app.MenuIndex - 1 + step, count) + 1;
+        app.SelectMenu(index);
     end
 
     function SelectMenu(app, num, ~)
@@ -441,14 +490,25 @@ methods (Access = private)
         end
 
         image = imgs{num};
-        % Resize non-square images (except 'broadening') to square for display
-        if ~ismember(app.HD.params.imageTypes{num}, {'broadening'}) && ...
+
+        % Convert a display copy; preserve the scientific image in imgs.
+        [displayImage, validMask] = toImageSource(image, app);
+
+        plotTypes = {'broadening', 'harmonic_spectrum'};
+
+        if ~ismember(app.HD.params.imageTypes{num}, plotTypes) && ...
                 size(image, 1) ~= size(image, 2)
-            maxSize = max(size(image));
-            image = imresize(image, [maxSize, maxSize]);
+
+            maxSize = max(size(image, 1), size(image, 2));
+            outputSize = [maxSize maxSize];
+
+            % Nearest-neighbor prevents invalid-pixel colors from blending
+            % into neighboring valid pixels.
+            displayImage = imresize(displayImage, outputSize, 'nearest');
+            validMask = imresize(validMask, outputSize, 'nearest');
         end
 
-        app.Image.ImageSource = toImageSource(image, app);
+        app.Image.ImageSource = displayImage;
         app.MenuIndex = num;
         app.updateImageTypeAnnotation(num);
     end
@@ -523,29 +583,6 @@ methods (Access = private)
         app.positioninfileSliderValueChanged();
     end
 
-    function registrationCheckBoxValueChanged(app, ~)
-        % Toggling registration enables/disables the disk ratio field
-        app.registrationDiskRatio.Enable = app.imageRegistration.Value;
-        app.registrationDiskLabel.Enable = app.imageRegistration.Value;
-        app.refreshClass();
-    end
-
-    function spatialFilterCheckBoxValueChanged(app, ~)
-        % Toggling spatial filter enables/disables its range fields
-        app.spatialFilterRange1.Enable = app.spatialFilter.Value;
-        app.spatialFilterRange2.Enable = app.spatialFilter.Value;
-        app.refreshClass();
-    end
-
-    function svdFilterCheckBoxValueChanged(app, ~)
-        % Toggling SVD filter enables/disables its threshold and stride fields
-        app.svdThreshold.Enable = app.svd_filter.Value;
-        app.svdThresholdResetButton.Enable = app.svd_filter.Value;
-        app.svdStride.Enable = app.svd_filter.Value;
-        app.svdStrideLabel.Enable = app.svd_filter.Value;
-        app.refreshClass();
-    end
-
     % --- Folder management -------------------------------------------------
 
     function FolderManagerButtonPushed(app, ~)
@@ -562,6 +599,7 @@ methods (Access = private)
     % --- Display-only image type overlay ---------------------------------
 
     function updateImageTypeAnnotation(app, index)
+
         if isempty(app.ImageTypeAnnotation) || ...
                 ~isvalid(app.ImageTypeAnnotation)
             return;
@@ -576,6 +614,7 @@ methods (Access = private)
         end
 
         imageTypes = app.HD.params.imageTypes;
+
         if index < 1 || index > numel(imageTypes)
             return;
         end
@@ -593,6 +632,7 @@ methods (Access = private)
     end
 
     function layoutImageDisplay(app, ~)
+
         if isempty(app.ImageDisplayPanel) || ...
                 ~isvalid(app.ImageDisplayPanel) || ...
                 isempty(app.Image) || ~isvalid(app.Image)
@@ -635,8 +675,8 @@ methods (Access = private)
             max(80, 16 + 9 * numel(app.ImageTypeAnnotation.Text)));
 
         app.ImageTypeAnnotation.Position = [ ...
-            imageLeft + margin, imageBottom + margin, ...
-            labelWidth, labelHeight];
+                                                imageLeft + margin, imageBottom + margin, ...
+                                                labelWidth, labelHeight];
     end
 
     % --- GUI <-> class sync (replaces external classtogui / guitoclass) ----
@@ -660,91 +700,69 @@ methods (Access = private)
     %   (C) preview rendered  — SavePreviewButton, image navigation
 
     function updateButtonStates(app)
-        fileReady = ~isempty(app.HD) && ~isempty(app.HD.file);
-        previewReady = fileReady && ~isempty(app.HD.render) && ...
+        fileReady = app.hasFile();
+
+        previewReady = fileReady && ...
+            ~isempty(app.HD.render) && ...
             ~isempty(app.HD.render.Output);
 
-        % ---- (B) require a loaded file ------------------------------------
-        fileControls = { ...
-                            app.SaveConfigButton, ...
-                            app.ClearConfigsButton, ...
-                            app.VideoRenderingButton, ...
-                            app.RefreshAppButton, ...
-                            app.RenderPreviewButton, ...
-                            app.AutofocusButton, ...
-                            app.imageRegistration, ...
-                            app.registrationDiskRatio, ...
-                            app.positioninfileSlider, ...
-                            app.framePosition, ...
-                            app.batchSize, ...
-                            app.batchStride, ...
-                            app.refBatchSize, ...
-                            app.fs, ...
-                            app.lambda, ...
-                            app.ppx, ...
-                            app.ppy, ...
-                            app.spatialFilter, ...
-                            app.spatialFilterRange1, ...
-                            app.spatialFilterRange2, ...
-                            app.PaddingNum, ...
-                            app.spatialTransform, ...
-                            app.spatialPropagation, ...
-                            app.svd_filter, ...
-                            app.svdThreshold, ...
-                            app.svdThresholdResetButton, ...
-                            app.svdStride, ...
-                            app.timeTransform, ...
-                            app.frequencyRange1, ...
-                            app.frequencyRange2, ...
-                            app.frequencyRangeBandRatio1, ...
-                            app.frequencyRangeBandRatio2, ...
-                            app.indexRange1, ...
-                            app.indexRange2, ...
-                            app.flat_field_gw, ...
-                            app.square, ...
-                            app.flip_x, ...
-                            app.flip_y, ...
-                            app.parforArg, ...
-                            app.AdvancedButton, ...
-                            app.LoadConfigButton, ...
-                            app.ImproveContrast, ...
-                            app.CornerCompensation, ...
-                            app.FileNameField
-                        };
+        % Controls that require a loaded file.
+        app.setControlsEnabled({
+                                'SaveConfigButton', 'ClearConfigsButton', ...
+                                    'VideoRenderingButton', 'RefreshAppButton', ...
+                                    'RenderPreviewButton', 'AutofocusButton', ...
+                                    'imageTypesListBox', 'imageRegistration', ...
+                                    'positioninfileSlider', 'framePosition', ...
+                                    'batchSize', 'batchStride', 'refBatchSize', ...
+                                    'fs', 'lambda', 'ppx', 'ppy', ...
+                                    'spatialFilter', 'PaddingNum', ...
+                                    'spatialTransform', 'spatialPropagation', ...
+                                    'svd_filter', 'timeTransform', ...
+                                    'flat_field_gw', 'square', 'flip_x', 'flip_y', ...
+                                    'parforArg', 'AdvancedButton', 'LoadConfigButton', ...
+                                    'ImproveContrast', 'CornerCompensation', 'FileNameField'
+                                }, fileReady);
 
-        for k = 1:numel(fileControls)
-            fileControls{k}.Enable = fileReady;
-        end
+        % Controls that require rendered output.
+        app.setControlsEnabled({
+                                'SavePreviewButton', 'NextMenu', 'ViewAllMenu'
+                                }, previewReady);
 
-        % ---- (C) require a rendered preview --------------------------------
-        app.SavePreviewButton.Enable = previewReady;
-        app.NextMenu.Enable = previewReady;
-        app.ViewAllMenu.Enable = previewReady;
+        % Registration.
+        app.setControlsEnabled({
+                                'registrationDiskRatio', 'registrationDiskLabel'
+                                }, fileReady && app.imageRegistration.Value);
 
-        % ---- frequency / index range: also respect the transform type ------
-        % (only meaningful once a file is loaded; skip otherwise)
-        if fileReady
-            app.updateTimeTransformControls();
-        end
+        % Spatial filtering.
+        app.setControlsEnabled({
+                                'spatialFilterRange1', 'spatialFilterRange2'
+                                }, fileReady && app.spatialFilter.Value);
 
-        % ---- registration disk ratio: only when registration is on ---------
-        if fileReady
-            app.registrationDiskRatio.Enable = app.imageRegistration.Value;
-            app.registrationDiskLabel.Enable = app.imageRegistration.Value;
-        end
+        % SVD filtering.
+        app.setControlsEnabled({
+                                'svdThreshold', 'svdThresholdResetButton', ...
+                                    'svdStride', 'svdStrideLabel'
+                                }, fileReady && app.svd_filter.Value);
 
-        % ---- SVD sub-controls: only when SVD filter is checked -------------
-        if fileReady
-            app.svdThreshold.Enable = app.svd_filter.Value;
-            app.svdThresholdResetButton.Enable = app.svd_filter.Value;
-            app.svdStride.Enable = app.svd_filter.Value;
-            app.svdStrideLabel.Enable = app.svd_filter.Value;
-        end
+        % Temporal transform.
+        frequencyMode = ismember(app.timeTransform.Value, ...
+            {'FFT', 'autocorrelation', 'intercorrelation'});
 
-        % ---- Spatial filter ranges: only when spatial filter is checked ----
-        if fileReady
-            app.spatialFilterRange1.Enable = app.spatialFilter.Value;
-            app.spatialFilterRange2.Enable = app.spatialFilter.Value;
+        app.setControlsEnabled({
+                                'frequencyRangeLabel', 'frequencyRange1', ...
+                                    'frequencyRange2', 'frequencyRangeBandRatioLabel', ...
+                                    'frequencyRangeBandRatio1', 'frequencyRangeBandRatio2'
+                                }, fileReady && frequencyMode);
+
+        app.setControlsEnabled({
+                                'indexRangeLabel', 'indexRange1', 'indexRange2'
+                                }, fileReady && ~frequencyMode);
+    end
+
+    function setControlsEnabled(app, names, enabled)
+
+        for k = 1:numel(names)
+            app.(names{k}).Enable = matlab.lang.OnOffSwitchState(enabled);
         end
 
     end
@@ -767,7 +785,7 @@ methods (Access = private)
 end % private helpers methods block
 
 % =========================================================================
-% Component initialisation — split by panel
+% Component initialization — split by panel
 % =========================================================================
 methods (Access = private)
 
@@ -1307,7 +1325,7 @@ methods (Access = private)
             'Text', 'Autofocus', ...
             'Tooltip', {['Estimate Noll-Zernike defocus from Doppler ', ...
                 'Shack-Hartmann sub-apertures and apply phase correction ', ...
-                'before Angular Spectrum propagation.']}, ...
+            'before Angular Spectrum propagation.']}, ...
             'ButtonPushedFcn', createCallbackFcn(app, @AutofocusButtonPushed, true), ...
             'BackgroundColor', grayButtonColor, ...
             'FontColor', fontColor);
@@ -1692,15 +1710,19 @@ methods (Access = public)
 
     end
 
+    % Public destructor
     function delete(app)
-        % Restore original MATLAB path before shutting down
+        diary off;
+
         if ~isempty(app.OriginalPath)
             path(app.OriginalPath);
         end
 
-        % Turn off diary (already done in CloseRequestFcn, but safe to repeat)
-        diary off;
-        delete(app.HoloDopplerUIFigure);
+        if ~isempty(app.HoloDopplerUIFigure) && ...
+                isgraphics(app.HoloDopplerUIFigure)
+            delete(app.HoloDopplerUIFigure);
+        end
+
     end
 
 end

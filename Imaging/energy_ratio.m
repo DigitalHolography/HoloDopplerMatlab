@@ -20,9 +20,9 @@ arguments
     batchSize (1, 1) double {mustBeInteger, mustBePositive}
 end
 
-if ~(fi1 < fi2 && fi2 < f2)
+if ~(f1 < fi1 && fi2 < f2)
     error('energy_ratio:InvalidBands', ...
-        'Band limits must satisfy fi1 < fi2 < f2.');
+        'Band limits must satisfy fi1 < fi1 <= fi2 < f2.');
 end
 
 if size(SH, 3) ~= batchSize

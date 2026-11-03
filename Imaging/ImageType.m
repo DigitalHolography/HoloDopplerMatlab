@@ -66,18 +66,26 @@ methods
 
     % ------------------------------------------------------------------
     function image2png(obj, preview_folder_name, folder_path)
-        % Save the stored image as a PNG file.
-        %   The image is flipped vertically (dim 1) to correct for
-        %   the y-axis inversion introduced by the lens imaging system.
         if isempty(obj.image)
-            warning("ImageType('%s'): image2png called but image is empty — skipping.", ...
-                obj.short_name);
-            return
+            warning('HoloDoppler:EmptyImage', ...
+                'ImageType "%s" is empty; export skipped.', obj.short_name);
+            return;
         end
 
-        I = mat2gray(flip(obj.image, 1)); % vertical flip + normalise
-        fname = sprintf('%s_%s.png', preview_folder_name, obj.short_name);
-        imwrite(I, fullfile(folder_path, fname));
+        if ~isfolder(folder_path)
+            mkdir(folder_path);
+        end
+
+        % Preserve the existing vertical-flip convention.
+        imageData = flip(obj.image, 1);
+
+        [rgb, validMask] = toImageSource(imageData);
+
+        filename = sprintf('%s_%s.png', ...
+            preview_folder_name, obj.short_name);
+
+        imwrite(rgb, fullfile(folder_path, filename), ...
+            'Alpha', double(validMask));
     end
 
 end % public methods

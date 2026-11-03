@@ -1,4 +1,4 @@
-function [w, sigma, h1, h2] = gaussian_width( ...
+function [w, sigma, h1, h2, diagnostic] = gaussian_width( ...
     SH, f1, f2, fs, batchSize, gw)
 %GAUSSIAN_WIDTH Estimate the intrinsic width of an aliased Gaussian.
 %
@@ -45,7 +45,7 @@ arguments
     gw (1, 1) double {mustBeFinite, mustBeNonnegative} = 0
 end
 
-%% Validate dimensions and options
+% Validate dimensions and options
 
 assert(ndims(SH) <= 3 && size(SH, 3) == batchSize, ...
     'gaussian_width:InvalidSize', ...
@@ -60,7 +60,13 @@ assert(gw == 0, ...
     ['Use gw=0. Multiplicative flat-field correction is not ' ...
      'applied to this width estimator.']);
 
-%% Prepare spectrum and frequency axis
+% Prepare spectrum and frequency axis
+
+diagnostic = struct( ...
+    'fft', [], ...
+    'axis', [], ...
+    'harmonicIndices', [], ...
+    'axisLabel', '');
 
 % Same input convention as moment0:
 % use the magnitude, without squaring it.
@@ -81,7 +87,7 @@ assert(all(mask), ...
     ['This estimator requires every bin of a complete FFT period. ' ...
      'Use f1=0 and f2=fs/2, with no masked or missing bins.']);
 
-%% Fourier harmonics along the frequency dimension
+% Fourier harmonics along the frequency dimension
 
 weight1 = reshape(exp(-1i * 2*pi * f / fs), 1, 1, []);
 weight2 = reshape(exp(-1i * 4*pi * f / fs), 1, 1, []);
@@ -93,7 +99,7 @@ H2 = sum(SH .* weight2, 3);
 h1 = abs(H1);
 h2 = abs(H2);
 
-%% Numerical validity
+% Numerical validity
 
 % Numerical round-off threshold, NOT a measurement-noise threshold.
 spectralSum = sum(SH, 3);
@@ -106,14 +112,86 @@ valid = ...
     & h2 > harmonicTolerance ...
     & h1 > h2;
 
-%% Estimate intrinsic width
+% Estimate intrinsic width
 
-sigma = zeros(size(h1));
+sigma = nan(size(h1), 'like', h1);
 
 logRatio = log(h1(valid)) - log(h2(valid));
 
 sigma(valid) = fs / (pi * sqrt(6)) .* sqrt(logRatio);
 
 w = 2 * sqrt(2 * log(2)) .* sigma;
+
+% Diagnostic: Fourier harmonics of one actual pixel spectrum
+% A single vector is required by renderHarmonicSpectrum.
+% Prefer a valid pixel with the largest first-harmonic amplitude.
+% This is a diagnostic pixel, not a spatially averaged spectrum.
+
+if nargout >= 5
+    candidates = valid;
+
+    % If no width estimate is valid, still allow inspection of a finite
+    % pixel spectrum to help diagnose the failure.
+    if ~any(candidates(:))
+        candidates = isfinite(spectralSum) & spectralSum > 0 ...
+            & isfinite(h1) & isfinite(h2);
+    end
+
+    candidateIndices = find(candidates);
+
+    if isempty(candidateIndices)
+        error('gaussian_width:NoDiagnosticPixel', ...
+            'No finite, positive-power pixel is available for the diagnostic.');
+    end
+
+    [~, bestIndex] = max(h1(candidateIndices));
+    pixelIndex = candidateIndices(bestIndex);
+
+    [row, col] = ind2sub(size(h1), pixelIndex);
+    spectrum = reshape(SH(row, col, :), [], 1);
+
+    % Verify the ordering required for fft(spectrum) to reproduce the
+    % weighted harmonic sums used above. Frequencies may differ by fs
+    % because the input axis uses signed FFT frequencies.
+    expectedPhase = exp( ...
+        -1i * 2*pi * (0:batchSize-1).' / batchSize);
+
+    actualPhase = exp(-1i * 2*pi * f / fs);
+
+    if isa(actualPhase, 'gpuArray')
+        orderingError = gather(max(abs(actualPhase - expectedPhase)));
+    else
+        orderingError = max(abs(actualPhase - expectedPhase));
+    end
+
+    assert(orderingError < 1e-10, ...
+        'gaussian_width:UnexpectedFrequencyOrdering', ...
+        ['The frequency ordering does not match an unshifted FFT. ' ...
+        'Reorder the spectrum and its frequency axis consistently.']);
+
+    % Transform along the spectral-bin dimension.
+    coefficients = fft(spectrum);
+
+    % Signed harmonic orders in the same ordering as fft().
+    % Even N: [0 ... N/2-1 -N/2 ... -1]
+    % Odd  N: [0 ... (N-1)/2 -(N-1)/2 ... -1]
+    harmonicOrders = (0:batchSize-1).';
+    harmonicOrders(harmonicOrders > floor((batchSize-1)/2)) = ...
+        harmonicOrders(harmonicOrders > floor((batchSize-1)/2)) ...
+        - batchSize;
+
+    diagnostic.fft = coefficients;
+    diagnostic.axis = harmonicOrders;
+    diagnostic.harmonicIndices = [2 3];
+    diagnostic.axisLabel = sprintf( ...
+        'Harmonic order | pixel (row=%d, col=%d)', row, col);
+
+    % Retain the exact pixel and source spectrum for inspection.
+    diagnostic.pixel = [row col];
+    diagnostic.inputSpectrum = spectrum;
+    diagnostic.inputFrequency = f;
+    diagnostic.selectedHarmonics = [H1(row, col); H2(row, col)];
+    diagnostic.widthEstimateValid = valid(row, col);
+end
 
 end
