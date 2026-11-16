@@ -58,7 +58,7 @@ f_c(~validCenter) = NaN;
 % Pixel-dependent bands relative to the centroid.
 relativeF = abs(f - f_c);
 
-lowMask  = relativeF >= fi1 & relativeF < fi2;
+lowMask  = relativeF >= f1 & relativeF < fi1;
 highMask = relativeF >= fi2 & relativeF <= f2;
 
 % Count only finite samples within each compensated band.

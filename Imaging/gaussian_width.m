@@ -114,7 +114,7 @@ valid = ...
 
 % Estimate intrinsic width
 
-sigma = nan(size(h1), 'like', h1);
+sigma = zeros(size(h1), 'like', h1);
 
 logRatio = log(h1(valid)) - log(h2(valid));
 
