@@ -1237,17 +1237,14 @@ config.moment_1 = struct('name', 'moment1', 'opts', defaultOpts);
 config.moment_2 = struct('name', 'moment2', 'opts', defaultOpts);
 config.LF_M0 = struct('name', 'LF_M0', 'opts', defaultOpts);
 config.HF_M0 = struct('name', 'HF_M0', 'opts', defaultOpts);
-% Gaussian spectral width:
-% export numerical values before display processing.
 config.gaussian_w = struct('name', 'gaussian_w', 'opts', defaultOpts);
-config.gaussian_width_moment = struct('name', 'gaussian_width_moment', 'opts', defaultOpts);
 
 opts_pd = defaultOpts;
 opts_pd.export_raw = false;
 config.power_Doppler = struct('name', 'M0', 'opts', opts_pd);
 config.band_ratio = struct('name', 'band_ratio', 'opts', opts_pd);
 
-simpleOpts = struct('temporalFilter', [], 'square', false, 'export_raw', false, ... % no square no raw
+simpleOpts = struct('temporalFilter', [], 'square', true, 'export_raw', false, ... % no square no raw
     'substractFlash', true, 'enhance_contrast', false);
 config.broadening = struct('name', 'broadening', 'opts', simpleOpts);
 config.f_RMS = struct('name', 'f_RMS', 'opts', simpleOpts);
