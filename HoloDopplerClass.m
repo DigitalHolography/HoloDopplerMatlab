@@ -442,21 +442,24 @@ methods
         images = obj.render.getImages(imageTypes);
 
         for i = 1:numel(images)
-            if isempty(images{i}), continue; end
+
+            if isempty(images{i})
+                continue
+            end
+
+            % Convert first: imresize must not receive scientific NaNs.
+            preview = toImageSource(images{i});
 
             if ~ismember(imageTypes{i}, ...
                     {'moment_0', 'moment_1', 'moment_2', 'SVD_cov', 'SVD_U', ...
                      'FH_modulus_mean', 'FH_arg_mean', 'broadening'})
-                max_dim = max(size(images{i}, 1), size(images{i}, 2));
-                imwrite(toImageSource(imresize(images{i}, [max_dim, max_dim])), ...
-                    fullfile(result_folder_path, ...
-                    strcat(obj.file.name, '_', imageTypes{i}, '.png')));
-            else
-                imwrite(toImageSource(images{i}), ...
-                    fullfile(result_folder_path, ...
-                    strcat(obj.file.name, '_', imageTypes{i}, '.png')));
+
+                max_dim = max(size(preview, 1), size(preview, 2));
+                preview = imresize(preview, [max_dim, max_dim]);
             end
 
+            imwrite(preview, fullfile(result_folder_path, ...
+                strcat(obj.file.name, '_', imageTypes{i}, '.png')));
         end
 
         % Save params snapshot alongside the preview.
@@ -762,7 +765,7 @@ methods
         if ~isfolder(baseOutputDir), mkdir(baseOutputDir); end
 
         result_folder_path = fullfile(baseOutputDir, ...
-            sprintf('%s_HD', obj.file.name));
+            sprintf('%s_HD_MATLAB', obj.file.name));
         if ~isfolder(result_folder_path), mkdir(result_folder_path); end
 
         for sub = {'avi', 'h5', 'png', 'json'}
@@ -1222,7 +1225,10 @@ end
 
 function [config, defaultUnknown] = getConfigs()
 config = struct();
-defaultOpts = struct('temporalFilter', [], 'square', true, 'export_raw', true, ...
+defaultOpts = struct( ...
+    'export_raw', true, ...
+    'temporalFilter', [], ...
+    'square', true, ...
     'substractFlash', true, 'enhance_contrast', true, ...
     'contrast_inversion', false, 'cornerNorm', false, 'export_avg_img', true);
 
@@ -1233,16 +1239,8 @@ config.LF_M0 = struct('name', 'LF_M0', 'opts', defaultOpts);
 config.HF_M0 = struct('name', 'HF_M0', 'opts', defaultOpts);
 % Gaussian spectral width:
 % export numerical values before display processing.
-config.gaussian_w = struct( ...
-    'name', 'gaussian_w', ...
-    'opts', struct( ...
-        'export_raw', true, ...
-        'substractFlash', false, ...
-        'cornerNorm', false, ...
-        'contrast_inversion', false, ...
-        'enhance_contrast', false, ...
-        'export_avg_img', true, ...
-        'square', false));
+config.gaussian_w = struct('name', 'gaussian_w', 'opts', defaultOpts);
+config.gaussian_width_moment = struct('name', 'gaussian_width_moment', 'opts', defaultOpts);
 
 opts_pd = defaultOpts;
 opts_pd.export_raw = false;
@@ -1443,7 +1441,7 @@ end
 
 if ndims(cube) ~= 3
     error('HoloDoppler:SHavgSweepBadCube', ...
-        'SH_avg must be a 3-D (Ny, Nx, nFreq) cube.');
+    'SH_avg must be a 3-D (Ny, Nx, nFreq) cube.');
 end
 
 cube = max(single(cube), 0);
@@ -1482,6 +1480,7 @@ switch mode
         % Negative partner of bin k is bin N-k. Nyquist (k = N/2, N even)
         % is its own partner and must not be counted twice.
         last = nPos;
+
         if mod(nFreq, 2) == 0
             last = nPos - 1;
         end
@@ -1489,6 +1488,7 @@ switch mode
         for k = 1:last
             out(:, :, k + 1) = out(:, :, k + 1) + cube(:, :, nFreq - k + 1);
         end
+
 end
 
 % ---- Per-frame log scaling, limits from the circle only ---------------------

@@ -165,8 +165,17 @@ methods (Access = private)
             @(~, ~) obj.renderVideos(), renderColor, fontColor);
 
         % Set consistent font
-        fontname(obj.Figure, 'Arial');
-        fontsize(obj.Figure, 12, "points");
+        availableFonts = string(listfonts);
+        preferredFonts = ["Open Sans", "Helvetica Neue", "Arial"];
+        uiFont = preferredFonts(find( ...
+            ismember(preferredFonts, availableFonts), 1));
+
+        if isempty(uiFont)
+            uiFont = "Arial";
+        end
+
+        fontname(app.HoloDopplerUIFigure, uiFont);
+        fontsize(app.HoloDopplerUIFigure, 11, "points");
     end
 
     function btn = makeButton(~, parent, pos, label, cb, bgColor, fontColor)

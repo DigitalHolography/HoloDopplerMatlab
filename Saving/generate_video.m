@@ -61,7 +61,12 @@ end
 
 % --- Flash subtraction ---
 if opt.substractFlash
-    video = video - mean(video, [1 2]);
+    video(~isfinite(video)) = NaN;
+
+    frameMean = mean(video, [1 2], 'omitnan');
+    frameMean(~isfinite(frameMean)) = 0;
+
+    video = video - frameMean;
 end
 
 % --- Corner normalisation ---
@@ -77,20 +82,61 @@ if opt.contrast_inversion
     video = -1.0 * video;
 end
 
-% --- Normalise to [0,1] and optionally enhance contrast ---
+% --- Normalize finite values only ---
+valid = isfinite(video);
+
 if opt.enhance_contrast
-    % Apply percentile-based stretch per frame (avoids flashes)
+
     for f = 1:size(video, 4)
-        frame = rescale(video(:, :, :, f));
-        % Use a very low low-percentile to keep dark parts bright
-        low_high = stretchlim(frame, [0.0001 0.9999]); % ignore 0.01 % extremes
-        video(:, :, :, f) = imadjust(frame, low_high, [0 1]);
+        frame = video(:, :, :, f);
+        frameValid = valid(:, :, :, f);
+        values = frame(frameValid);
+        out = zeros(size(frame), 'like', frame);
+
+        if ~isempty(values)
+            lo = min(values);
+            hi = max(values);
+
+            if hi > lo
+                samples = double((values - lo) ./ (hi - lo));
+                limits = stretchlim(samples(:), [0.0001 0.9999]);
+                limits = limits(:, 1);
+
+                if limits(2) > limits(1)
+                    span = hi - lo;
+                    hi = lo + limits(2) * span;
+                    lo = lo + limits(1) * span;
+                end
+
+                out(frameValid) = (values - lo) ./ (hi - lo);
+            end
+
+        end
+
+        out = min(max(out, 0), 1);
+        out(~frameValid) = 0;
+        video(:, :, :, f) = out;
     end
 
 else
-    % Global normalization
-    video = mat2gray(video);
+    % One common scale for the entire video.
+    values = video(valid);
+    out = zeros(size(video), 'like', video);
+
+    if ~isempty(values)
+        lo = min(values);
+        hi = max(values);
+
+        if hi > lo
+            out(valid) = (values - lo) ./ (hi - lo);
+        end
+
+    end
+
+    video = min(max(out, 0), 1);
 end
+
+video(~valid) = 0;
 
 % Write final video
 avi_dir = fullfile(output_path, 'avi');
