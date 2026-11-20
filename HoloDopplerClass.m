@@ -559,6 +559,7 @@ methods
         fprintf("Using %d worker(s).\n", numWorkers);
 
         h = waitbar(0, 'Initializing video rendering...');
+        styleWaitbar(h);
         closeWaitbar = onCleanup(@() closeWaitbarSafe(h));
 
         progress = 0;
@@ -759,6 +760,7 @@ methods
         VideoSavingTime = tic;
         disp('Saving video...');
         h = waitbar(0, 'Saving video...');
+        styleWaitbar(h);
         N = max(double(numel(imageTypes)), 1);
 
         baseOutputDir = fullfile(obj.file.dir, obj.file.name);

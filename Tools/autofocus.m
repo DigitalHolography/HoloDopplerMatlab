@@ -5,6 +5,7 @@ zmax = Params.autofocusRange2;
 
 % Create waitbar BEFORE referencing it in options
 f = waitbar(0, 'Autofocus in progress. Please wait...');
+styleWaitbar(f);
 cleanup = onCleanup(@() close(f));  % ensures waitbar closes even on error
 
 % Cost function with boundary penalty (already includes clamp logic)

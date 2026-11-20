@@ -1346,7 +1346,7 @@ methods
             'Position', [100, 100, 1000, 850]);
 
         cleanup = onCleanup( ...
-            @() delete(exportFigure)); %#ok<NASGU>
+            @() delete(exportFigure));
 
         % Copy both axes together with their associated legends.
         sourceObjects = [obj.axPlot, obj.axFits];
@@ -1413,7 +1413,7 @@ methods (Access = private)
 
         % Release the lock even if restoring the axes raises an error.
         lockCleanup = onCleanup( ...
-            @() obj.unlockSpectrumUpdate()); %#ok<NASGU>
+            @() obj.unlockSpectrumUpdate());
 
         obj.releaseSpectrumAxes();
 

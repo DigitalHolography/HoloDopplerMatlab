@@ -408,7 +408,7 @@ methods (Access = private)
 
         app.AutofocusButton.Enable = 'off';
         buttonCleanup = onCleanup( ...
-            @() set(app.AutofocusButton, 'Enable', 'on')); %#ok<NASGU>
+            @() set(app.AutofocusButton, 'Enable', 'on'));
         app.RenderPreviewLamp.Color = [1 0.5 0];
         drawnow;
 
