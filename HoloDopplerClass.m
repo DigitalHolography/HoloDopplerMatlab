@@ -1250,8 +1250,6 @@ config.SVD_cov = struct('name', 'SVD_cov', 'opts', struct());
 config.SVD_U = struct('name', 'SVD_U', 'opts', struct());
 config.color_Doppler = struct('name', 'color_Doppler', ...
     'opts', struct('square', true, 'enhance_contrast', true));
-config.color_band_ratio = struct('name', 'color_band_ratio', ...
-    'opts', struct('substractFlash', false, 'square', true, 'enhance_contrast', false));
 
 defaultUnknown = struct('temporalFilter', 2, 'square', true);
 end
@@ -1432,7 +1430,7 @@ end
 
 if ndims(cube) ~= 3
     error('HoloDoppler:SHavgSweepBadCube', ...
-        'SH_avg must be a 3-D (Ny, Nx, nFreq) cube.');
+    'SH_avg must be a 3-D (Ny, Nx, nFreq) cube.');
 end
 
 cube = max(single(cube), 0);
@@ -1471,6 +1469,7 @@ switch mode
         % Negative partner of bin k is bin N-k. Nyquist (k = N/2, N even)
         % is its own partner and must not be counted twice.
         last = nPos;
+
         if mod(nFreq, 2) == 0
             last = nPos - 1;
         end
@@ -1478,6 +1477,7 @@ switch mode
         for k = 1:last
             out(:, :, k + 1) = out(:, :, k + 1) + cube(:, :, nFreq - k + 1);
         end
+
 end
 
 % ---- Per-frame log scaling, limits from the circle only ---------------------

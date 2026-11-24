@@ -21,7 +21,7 @@ if nargin < 4 || isempty(hueAngle)
     hueAngle = 20;
 end
 if nargin < 5 || isempty(chromaMax)
-    chromaMax = 60;
+    chromaMax = 100;
 end
 
 M0 = double(M0);

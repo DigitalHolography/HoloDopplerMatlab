@@ -43,7 +43,6 @@ properties
     % --- Spectral statistics --------------------------------------------
     cumulative_distribution
     band_ratio
-    color_band_ratio
     entropy
 
     % --- Gaussian estimates ---------------------------------------------
@@ -124,7 +123,6 @@ methods
         % Spectral statistics
         obj.cumulative_distribution = ImageType('cdf');
         obj.band_ratio = ImageType('energy_ratio');
-        obj.color_band_ratio = ImageType('color_energy_ratio');
         obj.entropy = ImageType('entropy');
         obj.gaussian_w = ImageType('gaussian_w');
         obj.sigma = ImageType('sigma');
@@ -394,10 +392,6 @@ methods
 
         if obj.band_ratio.is_selected
             obj.band_ratio.image = energy_ratio(SH_mod, f1, f2, fr1, fr2, fs, batchSize);
-        end
-
-        if obj.color_band_ratio.is_selected
-            obj.color_band_ratio.image = color_energy_ratio(SH_mod, f1, f2, fr1, fr2, fs, batchSize, gw);
         end
 
         if obj.entropy.is_selected
