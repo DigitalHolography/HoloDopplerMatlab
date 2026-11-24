@@ -7,6 +7,7 @@ num_frames = size(frames, 4);
 shifts = zeros(2, num_frames, 'single');
 
 w = waitbar(0, 'Video registration in progress...');
+styleWaitbar(w);
 N_ = double(num_frames);
 parforWaitbar(w, N_);
 D = parallel.pool.DataQueue;

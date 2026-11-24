@@ -43,7 +43,8 @@ if isempty(frames)
 end
 
 h = waitbar(0, 'Autofocus: construction des sous-apertures...');
-cleanup = onCleanup(@() closeWaitbar(h)); %#ok<NASGU>
+styleWaitbar(h);
+cleanup = onCleanup(@() closeWaitbar(h));
 
 subImages = constructSubImages(single(frames), p, fileInfo, ...
     options.NumSubapertures);

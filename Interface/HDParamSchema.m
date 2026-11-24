@@ -1,20 +1,10 @@
 classdef HDParamSchema
-% HDParamSchema  Single source of truth for HD rendering parameters.
-%
-%   All parameter access goes through this class:
-%     - HDParamSchema.getDefaults()      → struct with all default values
-%     - HDParamSchema.validate(params)   → sanitized struct (corrupt fields
-%                                          replaced by their default)
-%     - HDParamSchema.classtogui(HD,app) → push HD.params + HD.file → GUI
-%     - HDParamSchema.guitoclass(HD,app) → push GUI → HD.params
-%
-%   NOTE: file-bound fields (Nx, Ny, num_frames, fs, lambda, ppx, ppy)
-%   live in HD.file and are NOT part of the schema / HD.params.
+% Rendering parameters only.
+% File metadata (fs, lambda, ppx, ppy, Nx, Ny) remains in HD.file.
 
 methods (Static)
 
     function defaults = getDefaults()
-        % Return a struct populated with every parameter default value.
         defaults = struct();
         schema = HDParamSchema.getFullSchema();
 
@@ -24,97 +14,90 @@ methods (Static)
 
     end
 
-    % -----------------------------------------------------------------
-    function [clean, warnings] = validate(params)
-        % Validate and sanitise a params struct.
-        %
-        %   [clean, warnings] = HDParamSchema.validate(params)
-        %
-        %   Every field present in the schema is checked for type and
-        %   range. Invalid or missing values are silently replaced by
-        %   their schema default. Extra fields (unknown to the schema)
-        %   are forwarded unchanged so callers never lose data.
-        %
-        %   warnings – cellstr, one entry per corrected field.
+    function schema = getFullSchema()
+        % No persistent cache: edits are reflected on the next call.
+        schema = HDParamSchema.buildSchema();
+    end
 
-        warnings = {};
+    function [clean, messages] = validate(params)
+        clean = HDParamSchema.getDefaults();
+        messages = {};
 
-        if ~isstruct(params)
-            warning('HDParamSchema:validate:notAStruct', ...
-            'validate() called with a non-struct – returning defaults.');
-            clean = HDParamSchema.getDefaults();
+        if ~isstruct(params) || ~isscalar(params)
+            warning('HDParamSchema:InvalidStruct', ...
+            'Expected a scalar struct; using defaults.');
             return
         end
 
-        % Start from a full-defaults base so missing fields are filled.
-        clean = HDParamSchema.getDefaults();
+        % Migrate old configurations before inserting defaults.
+        if ~isfield(params, 'filterType')
+            params.filterType = 'SVD';
 
-        % Copy unknown fields through untouched.
-        schemaKeys = {HDParamSchema.getFullSchema().param};
-        allFields = fieldnames(params);
+            if isfield(params, 'svd_filter')
+                value = params.svd_filter;
 
-        for k = 1:numel(allFields)
+                if HDParamSchema.isBoolean(value) && ~logical(value)
+                    params.filterType = 'None';
+                end
 
-            if ~ismember(allFields{k}, schemaKeys)
-                clean.(allFields{k}) = params.(allFields{k});
             end
 
         end
 
-        % Validate each schema field.
         schema = HDParamSchema.getFullSchema();
-        % schemaMap = containers.Map({schema.param}, num2cell(schema));
+        known = {schema.param};
+        names = fieldnames(params);
+
+        % Preserve parameters added elsewhere in the project.
+        for k = 1:numel(names)
+            name = names{k};
+
+            if ~ismember(name, known)
+                clean.(name) = params.(name);
+            end
+
+        end
 
         for k = 1:numel(schema)
             entry = schema(k);
-            fname = entry.param;
+            name = entry.param;
 
-            % Use incoming value if present, otherwise keep default.
-            if ~isfield(params, fname) || isempty(params.(fname))
-                % Already set to default above – nothing to do.
+            if ~isfield(params, name) || isempty(params.(name))
                 continue
             end
 
-            value = params.(fname);
+            value = params.(name);
             [ok, reason] = HDParamSchema.isValid(value, entry);
 
-            if ok
-                % Special post-processing for imageTypes.
-                if strcmp(fname, 'imageTypes')
-                    possible = fieldnames(ImageTypeList);
-                    clean.(fname) = intersect(value, possible, 'stable');
-                else
-                    clean.(fname) = value;
-                end
+            if ~ok
+                message = sprintf( ...
+                    'Invalid parameter "%s" (%s); using default.', ...
+                    name, reason);
 
-            else
-                % Keep default (already in clean), log a warning.
-                msg = sprintf('Parameter "%s" has an invalid value (%s) – using default.', ...
-                    fname, reason);
-                warnings{end + 1} = msg; %#ok<AGROW>
-                warning('HDParamSchema:validate:invalidValue', '%s', msg);
+                messages{end + 1} = message;
+                warning('HDParamSchema:InvalidValue', '%s', message);
+                continue
             end
 
+            switch entry.type
+                case 'checkbox'
+                    value = logical(value);
+                case 'dropdown'
+                    value = char(value);
+            end
+
+            if strcmp(name, 'imageTypes')
+                value = intersect( ...
+                    value, properties(ImageTypeList), 'stable');
+            end
+
+            clean.(name) = value;
         end
 
     end
 
-    % -----------------------------------------------------------------
-    function s = getFullSchema()
-        % Return the full schema array (cached after first build).
-        persistent schemaCache
-
-        if isempty(schemaCache)
-            schemaCache = HDParamSchema.buildSchema();
-        end
-
-        s = schemaCache;
-    end
-
-    % -----------------------------------------------------------------
     function classtogui(HD, app)
-        % Push HD.params (rendering params) and HD.file (file params)
-        % into the app UI widgets.
+
         if isempty(HD) || isempty(HD.params)
             return
         end
@@ -122,255 +105,298 @@ methods (Static)
         schema = HDParamSchema.getFullSchema();
 
         for k = 1:numel(schema)
-            e = schema(k);
+            entry = schema(k);
 
-            if isempty(e.widget) || ~isprop(app, e.widget)
+            if isempty(entry.widget) || ~isprop(app, entry.widget)
                 continue
             end
 
-            value = HDParamSchema.getParam(HD.params, e.param, e.default);
-            app.setWidgetValue(e.widget, value);
+            value = HDParamSchema.getParam( ...
+                HD.params, entry.param, entry.default);
+
+            app.setWidgetValue(entry.widget, value);
         end
 
-        % ---- File-bound fields (read from HD.file, not HD.params) ----
-        if ~isempty(HD.file)
-            app.setWidgetValue('Nx', double(HD.file.Nx));
-            app.setWidgetValue('Ny', double(HD.file.Ny));
+        if isempty(HD.file)
+            return
+        end
 
-            if isfield(HD.file, 'num_frames') && isfield(HD.params, 'batchSize')
-                newLimits = double([1, HD.file.num_frames - HD.params.batchSize + 1]);
+        names = {'Nx', 'Ny', 'fs', 'lambda', 'ppx', 'ppy'};
 
-                if newLimits(2) < newLimits(1)
-                    newLimits(2) = newLimits(1);
-                end
+        for k = 1:numel(names)
+            name = names{k};
 
-                app.setSliderLimits('positioninfileSlider', newLimits);
-                app.setWidgetValue('positioninfileSlider', ...
-                    double(HD.params.framePosition));
+            if isfield(HD.file, name) && isprop(app, name)
+                app.setWidgetValue(name, double(HD.file.(name)));
             end
 
-            % Reflect file-level hardware params in their display fields.
-            if isfield(HD.file, 'fs')
-                app.setWidgetValue('fs', double(HD.file.fs));
-            end
+        end
 
-            if isfield(HD.file, 'lambda')
-                app.setWidgetValue('lambda', double(HD.file.lambda));
-            end
+        if isfield(HD.file, 'num_frames') && ...
+                isfield(HD.params, 'batchSize') && ...
+                isprop(app, 'positioninfileSlider')
 
-            if isfield(HD.file, 'ppx')
-                app.setWidgetValue('ppx', double(HD.file.ppx));
-            end
+            lastPosition = max( ...
+                1, double(HD.file.num_frames - HD.params.batchSize + 1));
 
-            if isfield(HD.file, 'ppy')
-                app.setWidgetValue('ppy', double(HD.file.ppy));
-            end
+            % A slider requires distinct limits.
+            app.setSliderLimits( ...
+                'positioninfileSlider', [1 max(2, lastPosition)]);
 
+            position = min(lastPosition, max(1, ...
+                double(HD.params.framePosition)));
+
+            app.setWidgetValue('positioninfileSlider', position);
         end
 
     end
 
-    % -----------------------------------------------------------------
     function guitoclass(HD, app)
-        % Push app UI widgets → HD.params (rendering params only).
-        % File-bound fields (fs, lambda, ppx, ppy) are NOT written back
-        % to HD.params here; they live in HD.file.
+
         if isempty(HD)
             return
         end
 
-        fileBound = {'fs', 'lambda', 'ppx', 'ppy', 'Nx', 'Ny', 'num_frames'};
-
         schema = HDParamSchema.getFullSchema();
-        raw = struct();
+        merged = HD.params;
 
         for k = 1:numel(schema)
-            e = schema(k);
+            entry = schema(k);
 
-            if isempty(e.widget) || ~isprop(app, e.widget)
+            if isempty(entry.widget) || ~isprop(app, entry.widget)
                 continue
             end
 
-            if ismember(e.param, fileBound)
-                continue % never overwrite file-bound params from GUI
+            value = app.getWidgetValue(entry.widget);
+
+            % Missing controls must not overwrite existing parameters.
+            if isempty(value)
+                continue
             end
 
-            value = app.getWidgetValue(e.widget);
-
-            if isempty(value) || (isnumeric(value) && ~all(isfinite(value(:))))
-                value = e.default;
-            end
-
-            raw.(e.param) = value;
+            merged.(entry.param) = value;
         end
 
         if isprop(app, 'positioninfileSlider')
-            raw.framePosition = round(app.getWidgetValue('positioninfileSlider'));
-        end
+            position = app.getWidgetValue('positioninfileSlider');
 
-        % Merge with current params so unwidgeted fields survive,
-        % then validate the whole thing.
-        merged = HD.params;
-        fields = fieldnames(raw);
+            if ~isempty(position) && isscalar(position) && isfinite(position)
+                position = max(1, round(position));
 
-        for k = 1:numel(fields)
-            merged.(fields{k}) = raw.(fields{k});
+                if ~isempty(HD.file) && ...
+                        isfield(HD.file, 'num_frames')
+
+                    lastPosition = max( ...
+                        1, HD.file.num_frames - merged.batchSize + 1);
+
+                    position = min(position, lastPosition);
+                end
+
+                merged.framePosition = position;
+            end
+
         end
 
         HD.params = HDParamSchema.validate(merged);
     end
 
-end % public static methods
+end
 
-% =====================================================================
 methods (Static, Access = private)
 
-    function s = buildSchema()
-        % Each entry: param, widget, type, default, min, max
-        % File-bound fields (fs, lambda, ppx, ppy, Nx, Ny, num_frames)
-        % are intentionally ABSENT from this schema.
-        s = struct('param', {}, 'widget', {}, 'type', {}, ...
+    function schema = buildSchema()
+        % Columns: parameter, widget, type, default, minimum, maximum.
+        rows = {
+                'parforArg', 'parforArg', 'numeric', 10, -1, [];
+
+                'batchSize', 'batchSize', 'numeric', 256, 1, [];
+                'batchStride', 'batchStride', 'numeric', 256, 1, [];
+                'refBatchSize', 'refBatchSize', 'numeric', 512, 1, [];
+                'framePosition', 'framePosition', 'numeric', 1, 1, [];
+                'first_frame', '', 'numeric', 1, 1, [];
+                'end_frame', '', 'numeric', Inf, 1, [];
+
+                'imageTypes', 'imageTypesListBox', 'listbox', ...
+                    {'power_Doppler', 'moment_0', 'moment_1', ...
+             'moment_2', 'HF_M0', 'LF_M0'}, [], [];
+
+        'imageRegistration', 'imageRegistration', 'checkbox', true, [], [];
+        'registrationDiskRatio', 'registrationDiskRatio', 'numeric', 0.8, 0, 1000;
+        'autofocusRange1', 'autofocusRange1', 'numeric', 0, 0, [];
+        'autofocusRange2', 'autofocusRange2', 'numeric', 1, 0, [];
+
+        'spatialFilter', 'spatialFilter', 'checkbox', false, [], [];
+        'spatialFilterRange1', 'spatialFilterRange1', 'numeric', 0, 0, 1;
+        'spatialFilterRange2', 'spatialFilterRange2', 'numeric', 1, 0, 1;
+        'spatialTransform', 'spatialTransform', 'dropdown', 'Fresnel', [], [];
+        'spatialPropagation', 'spatialPropagation', 'numeric', 0, 0, [];
+        'PaddingNum', 'PaddingNum', 'numeric', 0, 0, [];
+
+        'filterType', 'filterType', 'dropdown', 'SVD', [], [];
+        'svd_filter', '', 'checkbox', true, [], [];
+        'svdThreshold', 'svdThreshold', 'numeric', 32, 0, [];
+        'svdStride', 'svdStride', 'numeric', 1, 1, [];
+        'polynomialDegree', '', 'numeric', 1, 0, [];
+
+        'filterCutoffHz', '', 'numeric', 1000, 0, [];
+        'filterOrder', '', 'numeric', 4, 1, [];
+        'filterZeroPhase', '', 'checkbox', true, [], [];
+        'filterLowHz', '', 'numeric', 1000, 0, [];
+        'filterHighHz', '', 'numeric', Inf, 0, [];
+        'filterTransitionHz', '', 'numeric', 0, 0, [];
+
+        'timeTransform', 'timeTransform', 'dropdown', 'FFT', [], [];
+        'frequencyRange1', 'frequencyRange1', 'numeric', 3, 0, [];
+        'frequencyRange2', 'frequencyRange2', 'numeric', 18, 0, [];
+        'indexRange1', 'indexRange1', 'numeric', 1, 1, [];
+        'indexRange2', 'indexRange2', 'numeric', 100, 1, [];
+        'frequencyRange_extra', '', 'numeric', -1, [], [];
+        'frequencyRangeBandRatio1', 'frequencyRangeBandRatio1', 'numeric', 6, 0, [];
+        'frequencyRangeBandRatio2', 'frequencyRangeBandRatio2', 'numeric', 9, 0, [];
+
+        'flatfield_gw', 'flat_field_gw', 'numeric', 35, 0, [];
+        'flip_y', 'flip_y', 'checkbox', false, [], [];
+        'flip_x', 'flip_x', 'checkbox', true, [], [];
+        'square', 'square', 'checkbox', true, [], [];
+        'ImproveContrast', 'ImproveContrast', 'checkbox', false, [], [];
+        'CornerCompensation', 'CornerCompensation', 'checkbox', true, [], [];
+
+        'phase_registration', 'phaseregistrationCheckBox', 'checkbox', false, [], [];
+        'iterative_registration', 'iterativeregistrationCheckBox', 'checkbox', false, [], [];
+        'show_ref', 'showrefCheckBox', 'checkbox', false, [], [];
+        'bucketsRanges', '', 'numeric', [], [], [];
+        'buckets_raw', 'bucketsraw', 'checkbox', false, [], [];
+        };
+
+        schema = struct( ...
+            'param', {}, 'widget', {}, 'type', {}, ...
             'default', {}, 'min', {}, 'max', {});
 
-        % ---- parallel ------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('parforArg', 'parforArg', 'numeric', 10, -1, []);
+        for k = 1:size(rows, 1)
+            entry.param = rows{k, 1};
+            entry.widget = rows{k, 2};
+            entry.type = rows{k, 3};
+            entry.default = rows{k, 4};
+            entry.min = rows{k, 5};
+            entry.max = rows{k, 6};
+            schema(k) = entry;
+        end
 
-        % ---- batch ---------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('batchSize', 'batchSize', 'numeric', 256, 1, []);
-        s(end + 1) = HDParamSchema.entry('batchStride', 'batchStride', 'numeric', 256, 1, []);
-        s(end + 1) = HDParamSchema.entry('refBatchSize', 'refBatchSize', 'numeric', 512, 1, []);
-        s(end + 1) = HDParamSchema.entry('framePosition', 'framePosition', 'numeric', 1, 1, []);
-        s(end + 1) = HDParamSchema.entry('first_frame', '', 'numeric', 1, 1, []);
-        s(end + 1) = HDParamSchema.entry('end_frame', '', 'numeric', Inf, 1, []);
-
-        % ---- image types ---------------------------------------------
-        s(end + 1) = HDParamSchema.entry('imageTypes', 'imageTypesListBox', 'listbox', ...
-            {{'power_Doppler', 'moment_0', 'moment_1', 'moment_2', 'HF_M0', 'LF_M0'}});
-        % Block-mean factor used only for SH and SH_avg storage/export.
-        s(end + 1) = HDParamSchema.entry('SHSpatialBinning', '', 'numeric', 16, 1, []);
-
-        % ---- registration --------------------------------------------
-        s(end + 1) = HDParamSchema.entry('imageRegistration', 'imageRegistration', 'checkbox', true);
-        s(end + 1) = HDParamSchema.entry('registrationDiskRatio', 'registrationDiskRatio', 'numeric', 0.8, 0, 1000);
-        s(end + 1) = HDParamSchema.entry('autofocusRange1', 'autofocusRange1', 'numeric', 0, 0, []);
-        s(end + 1) = HDParamSchema.entry('autofocusRange2', 'autofocusRange2', 'numeric', 1, 0, []);
-
-        % ---- spatial -------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('spatialFilter', 'spatialFilter', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('spatialFilterRange1', 'spatialFilterRange1', 'numeric', 0, 0, 1);
-        s(end + 1) = HDParamSchema.entry('spatialFilterRange2', 'spatialFilterRange2', 'numeric', 1, 0, 1);
-        s(end + 1) = HDParamSchema.entry('spatialTransform', 'spatialTransform', 'dropdown', 'Fresnel');
-        s(end + 1) = HDParamSchema.entry('spatialPropagation', 'spatialPropagation', 'numeric', 0, 0, []);
-        s(end + 1) = HDParamSchema.entry('defocusCorrection', '', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('defocusCoefficientRad', '', 'numeric', 0, [], []);
-        s(end + 1) = HDParamSchema.entry('defocusPupilRadius', '', 'numeric', 2, 0, []);
-        s(end + 1) = HDParamSchema.entry('PaddingNum', 'PaddingNum', 'numeric', 0, 0, []);
-
-        % ---- SVD -----------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('svd_filter', 'svd_filter', 'checkbox', true);
-        s(end + 1) = HDParamSchema.entry('svdThreshold', 'svdThreshold', 'numeric', 32, 0, []);
-        s(end + 1) = HDParamSchema.entry('svdStride', 'svdStride', 'numeric', 1, 1, []);
-
-        % ---- time transform ------------------------------------------
-        s(end + 1) = HDParamSchema.entry('timeTransform', 'timeTransform', 'dropdown', 'FFT');
-        s(end + 1) = HDParamSchema.entry('frequencyRange1', 'frequencyRange1', 'numeric', 6, 0, []);
-        s(end + 1) = HDParamSchema.entry('frequencyRange2', 'frequencyRange2', 'numeric', 18, 0, []);
-        s(end + 1) = HDParamSchema.entry('indexRange1', 'indexRange1', 'numeric', 1, 1, []);
-        s(end + 1) = HDParamSchema.entry('indexRange2', 'indexRange2', 'numeric', 100, 1, []);
-
-        % ---- extra ---------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('frequencyRange_extra', '', 'numeric', -1, [], []);
-        s(end + 1) = HDParamSchema.entry('frequencyRangeBandRatio1', 'frequencyRangeBandRatio1', 'numeric', 3, 0, []);
-        s(end + 1) = HDParamSchema.entry('frequencyRangeBandRatio2', 'frequencyRangeBandRatio2', 'numeric', 9, 0, []);
-
-        % ---- post-processing -----------------------------------------
-        s(end + 1) = HDParamSchema.entry('flatfield_gw', 'flat_field_gw', 'numeric', 35, 0, []);
-        s(end + 1) = HDParamSchema.entry('flip_y', 'flip_y', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('flip_x', 'flip_x', 'checkbox', true);
-        s(end + 1) = HDParamSchema.entry('square', 'square', 'checkbox', true);
-        s(end + 1) = HDParamSchema.entry('ImproveContrast', 'ImproveContrast', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('CornerCompensation', 'CornerCompensation', 'checkbox', true);
-
-        % ---- advanced ------------------------------------------------
-        s(end + 1) = HDParamSchema.entry('phase_registration', 'phaseregistrationCheckBox', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('iterative_registration', 'iterativeregistrationCheckBox', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('show_ref', 'showrefCheckBox', 'checkbox', false);
-        s(end + 1) = HDParamSchema.entry('bucketsRanges', '', 'numeric', []);
-        s(end + 1) = HDParamSchema.entry('buckets_raw', 'bucketsraw', 'checkbox', false);
     end
 
-    % -----------------------------------------------------------------
-    function e = entry(param, widget, type, default, minVal, maxVal)
-        if nargin < 5, minVal = []; end
-        if nargin < 6, maxVal = []; end
-        e = struct('param', param, 'widget', widget, 'type', type, ...
-            'default', default, 'min', minVal, 'max', maxVal);
-    end
-
-    % -----------------------------------------------------------------
     function [ok, reason] = isValid(value, entry)
-        % Returns true/false + a short human-readable reason on failure.
-        ok = true;
+        ok = false;
         reason = '';
 
         switch entry.type
             case 'numeric'
 
-                if ~isnumeric(value) || isempty(value)
-                    ok = false; reason = 'not numeric or empty'; return
-                end
-
-                % NaN check (Inf is intentionally allowed for end_frame).
-                if any(isnan(value(:)))
-                    ok = false; reason = 'contains NaN'; return
+                if ~isnumeric(value) || isempty(value) || ...
+                        ~isreal(value) || any(isnan(value(:)))
+                    reason = 'expected real numeric data without NaN';
+                    return
                 end
 
                 if ~isempty(entry.min) && any(value(:) < entry.min)
-                    ok = false;
-                    reason = sprintf('value %g < min %g', min(value(:)), entry.min);
+                    reason = 'below minimum';
                     return
                 end
 
                 if ~isempty(entry.max) && any(value(:) > entry.max)
-                    ok = false;
-                    reason = sprintf('value %g > max %g', max(value(:)), entry.max);
+                    reason = 'above maximum';
                     return
                 end
 
             case 'checkbox'
 
-                if ~(islogical(value) || ...
-                        (isnumeric(value) && isscalar(value) && any(value == [0 1])))
-                    ok = false; reason = 'not a boolean scalar'; return
+                if ~HDParamSchema.isBoolean(value)
+                    reason = 'expected a boolean scalar';
+                    return
+                end
+
+            case 'dropdown'
+                validText = ...
+                    (ischar(value) && isrow(value) && ~isempty(value)) || ...
+                    (isstring(value) && isscalar(value));
+
+                if ~validText
+                    reason = 'expected a char row or scalar string';
+                    return
+                end
+
+                text = string(value);
+
+                if ismissing(text) || strlength(text) == 0
+                    reason = 'empty or missing selection';
+                    return
                 end
 
             case 'listbox'
 
-                if ~(iscell(value) && all(cellfun(@ischar, value)))
-                    ok = false; reason = 'not a cell array of char'; return
-                end
-
-            case 'dropdown'
-
-                if ~(ischar(value) || (isstring(value) && isscalar(value)))
-                    ok = false; reason = 'not a char/string scalar'; return
+                if ~iscell(value) || ...
+                        ~all(cellfun(@ischar, value(:)))
+                    reason = 'expected a cell array of char vectors';
+                    return
                 end
 
         end
 
+        % Additional checks for filter parameters.
+        try
+
+            switch entry.param
+                case 'filterType'
+
+                    if ~ismember(string(value), ClutterFilter.supportedTypes())
+                        reason = 'unknown clutter filter';
+                        return
+                    end
+
+                case 'polynomialDegree'
+                    validateattributes(value, {'numeric'}, ...
+                        {'scalar', 'real', 'finite', 'integer', 'nonnegative'});
+
+                case 'filterOrder'
+                    validateattributes(value, {'numeric'}, ...
+                        {'scalar', 'real', 'finite', 'integer', 'positive'});
+
+                case 'filterCutoffHz'
+                    validateattributes(value, {'numeric'}, ...
+                        {'scalar', 'real', 'finite', 'positive'});
+
+                case {'filterLowHz', 'filterTransitionHz'}
+                    validateattributes(value, {'numeric'}, ...
+                        {'scalar', 'real', 'finite', 'nonnegative'});
+
+                case 'filterHighHz'
+                    % Positive Inf disables upper-frequency rejection.
+                    validateattributes(value, {'numeric'}, ...
+                        {'scalar', 'real', 'nonnan', 'positive'});
+            end
+
+        catch ME
+            reason = ME.message;
+            return
+        end
+
+        ok = true;
     end
 
-    % -----------------------------------------------------------------
+    function ok = isBoolean(value)
+        ok = (islogical(value) || isnumeric(value)) && ...
+            isscalar(value) && isreal(value) && isfinite(value) && ...
+            (value == 0 || value == 1);
+    end
+
     function value = getParam(params, name, default)
+        value = default;
 
         if isfield(params, name) && ~isempty(params.(name))
             value = params.(name);
-        else
-            value = default;
         end
 
     end
 
-end % private static methods
+end
 
-end % classdef
+end

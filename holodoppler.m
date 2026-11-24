@@ -143,6 +143,7 @@ methods (Access = private)
         app.HD = HoloDopplerClass();
         app.syncGuiFromClass();
         app.updateButtonStates();
+        app.HoloDopplerUIFigure.Visible = 'on';
 
         % The splash screen must never prevent application startup.
         try
@@ -189,8 +190,8 @@ methods (Access = private)
 
     end
 
-    function [ok, output] = readGit(~, appRoot, arguments)
-        command = sprintf('git -C "%s" %s', appRoot, arguments);
+    function [ok, output] = readGit(~, appRoot, gitArgs)
+        command = sprintf('git -C "%s" %s', appRoot, gitArgs);
         [status, output] = system(command);
         ok = status == 0;
         output = strtrim(output);
@@ -365,11 +366,6 @@ methods (Access = private)
     % Sync every widget value into the HD class, then update enable states.
     % Connected to ~50 component ValueChanged callbacks.
     function refreshClass(app, ~)
-
-        if isempty(app.HD)
-            return;
-        end
-
         app.syncClassFromGui();
         app.updateButtonStates();
     end
@@ -412,7 +408,7 @@ methods (Access = private)
 
         app.AutofocusButton.Enable = 'off';
         buttonCleanup = onCleanup( ...
-            @() set(app.AutofocusButton, 'Enable', 'on')); %#ok<NASGU>
+            @() set(app.AutofocusButton, 'Enable', 'on'));
         app.RenderPreviewLamp.Color = [1 0.5 0];
         drawnow;
 
@@ -492,7 +488,7 @@ methods (Access = private)
         image = imgs{num};
 
         % Convert a display copy; preserve the scientific image in imgs.
-        [displayImage, validMask] = toImageSource(image, app);
+        [displayImage] = toImageSource(image, app);
 
         plotTypes = {'broadening', 'harmonic_spectrum'};
 
@@ -505,7 +501,6 @@ methods (Access = private)
             % Nearest-neighbor prevents invalid-pixel colors from blending
             % into neighboring valid pixels.
             displayImage = imresize(displayImage, outputSize, 'nearest');
-            validMask = imresize(validMask, outputSize, 'nearest');
         end
 
         app.Image.ImageSource = displayImage;
@@ -555,7 +550,10 @@ methods (Access = private)
     function positioninfileSliderValueChanged(app, ~)
 
         if ~isempty(app.HD.file)
-            app.framePosition.Value = round(app.positioninfileSlider.Value);
+            lastFrame = max(1, double(app.HD.file.num_frames) - ...
+                double(app.HD.params.batchSize) + 1);
+            app.framePosition.Value = min(lastFrame, ...
+                max(1, round(app.positioninfileSlider.Value)));
         else
             app.framePosition.Value = 1;
         end
@@ -684,20 +682,22 @@ methods (Access = private)
     % Push all widget values into HD (was external guitoclass)
     function syncClassFromGui(app)
         HDParamSchema.guitoclass(app.HD, app);
+        % Legacy SVD checkbox is authoritative; discard an old selector value.
+        if isfield(app.HD.params, 'filterType')
+            app.HD.params = rmfield(app.HD.params, 'filterType');
+        end
+
     end
 
-    % Pull all HD values into widgets (was external classtogui)
     function syncGuiFromClass(app)
-        HDParamSchema.classtogui(app.HD, app);
-    end
+        % Ignore filterType stored by earlier versions of this interface.
+        if isfield(app.HD.params, 'filterType')
+            app.HD.params = rmfield(app.HD.params, 'filterType');
+        end
 
-    % --- Enable / disable controls based on application state -------------
-    %
-    % Three tiers of availability:
-    %   (A) always available  — LoadfileButton, LoadConfigButton,
-    %                           FolderManagerButton, AdvancedButton
-    %   (B) file loaded       — everything that reads from obj.reader
-    %   (C) preview rendered  — SavePreviewButton, image navigation
+        HDParamSchema.classtogui(app.HD, app);
+        app.updateButtonStates();
+    end
 
     function updateButtonStates(app)
         fileReady = app.hasFile();
@@ -770,16 +770,184 @@ methods (Access = private)
     % --- refreshClass sub-routines ----------------------------------------
 
     function updateTimeTransformControls(app)
-        useFreqRange = ismember(app.timeTransform.Value, {'FFT', 'autocorrelation', 'intercorrelation'});
-        app.frequencyRangeLabel.Enable = useFreqRange;
-        app.frequencyRange1.Enable = useFreqRange;
-        app.frequencyRange2.Enable = useFreqRange;
-        app.frequencyRangeBandRatioLabel.Enable = useFreqRange;
-        app.frequencyRangeBandRatio1.Enable = useFreqRange;
-        app.frequencyRangeBandRatio2.Enable = useFreqRange;
-        app.indexRange1.Enable = ~useFreqRange;
-        app.indexRange2.Enable = ~useFreqRange;
-        app.indexRangeLabel.Enable = ~useFreqRange;
+        app.updateButtonStates();
+    end
+
+    function applyMaterialTheme(app)
+        % Native MATLAB controls, Material-inspired dark tonal palette.
+        c.bg = [16 18 23] / 255;
+        c.card = [25 28 35] / 255;
+        c.field = [35 39 49] / 255;
+        c.text = [234 237 245] / 255;
+        c.muted = [174 183 201] / 255;
+        c.primary = [191 172 255] / 255;
+        c.onPrimary = [38 22 77] / 255;
+        c.tonal = [49 56 74] / 255;
+        c.onTonal = [220 228 248] / 255;
+        fig = app.HoloDopplerUIFigure;
+        fig.Color = c.bg;
+
+        available = string(listfonts);
+        preferred = ["Open Sans", "Helvetica Neue", "Roboto", "Segoe UI", "Arial"];
+        chosen = preferred(find(ismember(preferred, available), 1));
+        if isempty(chosen), chosen = "Arial"; end
+        fontname(fig, char(chosen));
+        fontsize(fig, 11, "points");
+
+        objects = findall(fig);
+
+        for k = 1:numel(objects)
+            o = objects(k);
+
+            if isa(o, 'matlab.ui.container.GridLayout')
+                o.BackgroundColor = c.card;
+                o.RowSpacing = 6;
+                o.ColumnSpacing = 8;
+                o.Padding = [14 14 14 14];
+            elseif isa(o, 'matlab.ui.container.Panel')
+                o.BackgroundColor = c.card;
+                o.ForegroundColor = c.text;
+                o.FontWeight = 'bold';
+                o.FontSize = 12;
+                o.BorderType = 'none';
+            elseif isa(o, 'matlab.ui.control.Button')
+                o.BackgroundColor = c.tonal;
+                o.FontColor = c.onTonal;
+                o.FontWeight = 'normal';
+            elseif isa(o, 'matlab.ui.control.NumericEditField') || ...
+                    isa(o, 'matlab.ui.control.EditField') || ...
+                    isa(o, 'matlab.ui.control.DropDown') || ...
+                    isa(o, 'matlab.ui.control.Spinner') || ...
+                    isa(o, 'matlab.ui.control.ListBox')
+                o.BackgroundColor = c.field;
+                o.FontColor = c.text;
+            elseif isa(o, 'matlab.ui.control.CheckBox')
+                o.FontColor = c.text;
+            elseif isa(o, 'matlab.ui.control.Label') || ...
+                    isa(o, 'matlab.ui.control.Slider')
+                o.FontColor = c.muted;
+            end
+
+        end
+
+        primaryActions = {app.RenderPreviewButton, app.VideoRenderingButton};
+
+        for k = 1:numel(primaryActions)
+            primaryActions{k}.BackgroundColor = c.primary;
+            primaryActions{k}.FontColor = c.onPrimary;
+            primaryActions{k}.FontWeight = 'bold';
+        end
+
+        app.LoadfileButton.BackgroundColor = [65 83 111] / 255;
+        app.LoadfileButton.FontColor = [234 241 255] / 255;
+        app.ClearConfigsButton.FontColor = [255 180 171] / 255;
+
+        app.RootGrid.BackgroundColor = c.bg;
+        app.RootGrid.Padding = [16 16 16 16];
+        app.RootGrid.RowSpacing = 14;
+        app.RootGrid.ColumnSpacing = 14;
+        app.ImageDisplayPanel.BackgroundColor = c.bg;
+        app.batchPanel.BackgroundColor = c.field;
+        app.batchGrid.BackgroundColor = c.field;
+        app.ImageTypeAnnotation.BackgroundColor = c.field;
+        app.ImageTypeAnnotation.FontColor = c.text;
+        app.ImageTypeAnnotation.FontSize = 11;
+
+        app.configureMaterialLayout();
+    end
+
+    function configureMaterialLayout(app)
+        % Explicit row heights keep inputs usable; small windows can scroll.
+        app.FileselectionPanel.Title = 'File & acquisition';
+        app.batchPanel.Title = 'Batch & video';
+        app.renderingParametersPanel.Title = 'Reconstruction & rendering';
+        app.mainParametersGrid.ColumnWidth = {150, '1x', '1x'};
+        app.mainParametersGrid.RowHeight = ...
+            {32, 32, 30, 30, 30, 30, 30, 30, 32, 30, 360, 32};
+        app.mainParametersGrid.Scrollable = 'on';
+
+        % Compact the previously unused rows of the batch section.
+        app.batchGrid.ColumnWidth = {156, '1x', 28};
+        app.batchGrid.RowHeight = {132, 34, 30, 30, 30, 28, 30};
+        app.imageRegistration.Layout.Row = 6;
+        app.registrationDiskLabel.Layout.Row = 7;
+        app.registrationDiskRatio.Layout.Row = 7;
+        app.VideoRenderingButton.Layout.Column = [1 2];
+        app.VideoRenderingLamp.Layout.Column = 3;
+        app.VideoRenderingButton.Text = 'Render video';
+        app.VideoRenderingLamp.Tooltip = 'Video rendering status';
+
+        app.renderingParametersGrid.ColumnWidth = {164, '1x', '1x'};
+        % Reserve a flexible spacer above the bottom action bar.
+        app.renderingParametersGrid.RowHeight = ...
+            [repmat({32}, 1, 13), {'1x', 38}];
+        app.RenderPreviewLamp.Layout.Row = 15;
+        app.RenderPreviewButton.Layout.Row = 15;
+        app.SavePreviewButton.Layout.Row = 15;
+        app.renderingParametersGrid.Scrollable = 'on';
+        app.svd_filter.Text = 'SVD filter';
+        app.frequencyRangeLabel.Text = 'Frequency (kHz)';
+        app.spatialPropagationLabel.Text = 'Propagation (m)';
+        app.PaddingLabel.Text = 'Padding size';
+        app.numworkersSpinnerLabel.Text = 'Workers';
+        app.RootGrid.Scrollable = 'on';
+        app.HoloDopplerUIFigure.AutoResizeChildren = 'off';
+        app.HoloDopplerUIFigure.SizeChangedFcn = ...
+            @(~, ~) app.updateResponsiveLayout();
+
+        % Placer les derniers contrôles avant de fixer le nombre de lignes.
+        app.imageRegistration.Layout.Row = 6;
+        app.registrationDiskLabel.Layout.Row = 7;
+        app.registrationDiskRatio.Layout.Row = 7;
+
+        % Sept lignes explicites : aucune ligne vide résiduelle.
+        app.batchGrid.RowHeight = {132, 34, 30, 30, 30, 28, 30};
+        app.batchGrid.RowSpacing = 6;
+        app.batchGrid.Padding = [14 14 14 14];
+        app.batchGrid.Scrollable = 'on';
+
+        % Réserver assez de place au panneau batch, titre compris.
+        mainRows = app.mainParametersGrid.RowHeight;
+        mainRows{11} = 430;
+        app.mainParametersGrid.RowHeight = mainRows;
+
+        % Si la fenêtre est trop basse, faire défiler la colonne de gauche.
+        app.mainParametersGrid.Scrollable = 'on';
+
+        app.updateResponsiveLayout();
+    end
+
+    function updateResponsiveLayout(app)
+
+        if isempty(app.ImageDisplayPanel) || ~isvalid(app.ImageDisplayPanel)
+            return;
+        end
+
+        width = app.HoloDopplerUIFigure.Position(3);
+
+        if width >= 1280
+            % Desktop: acquisition | reconstruction | large preview.
+            app.RootGrid.ColumnWidth = {390, 440, '1x'};
+            app.FileselectionPanel.Layout.Row = 1;
+            app.FileselectionPanel.Layout.Column = 1;
+            app.renderingParametersPanel.Layout.Row = 1;
+            app.renderingParametersPanel.Layout.Column = 2;
+            app.ImageDisplayPanel.Layout.Row = 1;
+            app.ImageDisplayPanel.Layout.Column = 3;
+            app.RootGrid.RowHeight = {'1x'};
+        else
+            % Compact: preview above reconstruction; no compressed controls.
+            app.RootGrid.RowHeight = {300, 650};
+            app.FileselectionPanel.Layout.Row = [1 2];
+            app.FileselectionPanel.Layout.Column = 1;
+            app.renderingParametersPanel.Layout.Row = 2;
+            app.renderingParametersPanel.Layout.Column = 2;
+            app.ImageDisplayPanel.Layout.Row = 1;
+            app.ImageDisplayPanel.Layout.Column = 2;
+            app.RootGrid.ColumnWidth = {390, 440};
+        end
+
+        app.layoutImageDisplay();
     end
 
 end % private helpers methods block
@@ -798,22 +966,25 @@ methods (Access = private)
         app.createrenderingParametersPanel();
         app.createImageViewsAndMenus();
 
-        fontname(app.HoloDopplerUIFigure, 'Arial');
         fontsize(app.HoloDopplerUIFigure, 12, "points");
+        app.applyMaterialTheme();
 
-        app.HoloDopplerUIFigure.Visible = 'on';
     end
 
     % -----------------------------------------------------------------------
     function createFigureAndRootGrid(app, pathToMLAPP)
 
-        % Computer screen Window Size
-        screenSize = get(0, 'ScreenSize');
-        % Set the app window position to be centered
-        appWidth = 800;
-        appHeight = 900;
-        appX = (screenSize(3) - appWidth) / 2;
-        appY = (screenSize(4) - appHeight) / 2;
+        screenSize = get(groot, 'ScreenSize');
+
+        % Fenêtre paysage, adaptée à la taille de l'écran.
+        scale = min([1, ...
+                         0.95 * screenSize(3) / 1500, ...
+                         0.90 * screenSize(4) / 940]);
+
+        appWidth = round(1500 * scale);
+        appHeight = round(940 * scale);
+        appX = screenSize(1) + (screenSize(3) - appWidth) / 2;
+        appY = screenSize(2) + (screenSize(4) - appHeight) / 2;
 
         app.HoloDopplerUIFigure = uifigure('Visible', 'off', ...
             'Position', [appX appY appWidth appHeight], ...
@@ -823,12 +994,12 @@ methods (Access = private)
             'WindowKeyPressFcn', createCallbackFcn(app, @HoloDopplerUIFigureWindowKeyPress, true), ...
             'WindowStyle', 'normal'); % allows maximizing on Windows
 
-        app.RootGrid = uigridlayout(app.HoloDopplerUIFigure, [2 2], ...
-            'ColumnWidth', {'fit', 'fit', '1x'}, ...
+        app.RootGrid = uigridlayout(app.HoloDopplerUIFigure, [2 3], ...
+            'ColumnWidth', {370, 440, '1x'}, ...
             'RowHeight', {'1x', 'fit'}, ...
-            'RowSpacing', 5, ...
-            'ColumnSpacing', 5, ...
-            'Padding', [10 10 10 10], ...
+            'RowSpacing', 10, ...
+            'ColumnSpacing', 12, ...
+            'Padding', [14 14 14 14], ...
             'BackgroundColor', [0.2 0.2 0.2]);
 
     end
@@ -1006,13 +1177,19 @@ methods (Access = private)
 
         app.parforArg = uispinner(app.mainParametersGrid);
         app.parforArg.ValueChangingFcn = createCallbackFcn(app, @refreshClass, true);
-        maxWorkers = parcluster('local').NumWorkers;
+
+        try
+            maxWorkers = parcluster('local').NumWorkers;
+        catch
+            maxWorkers = 0;
+        end
+
         app.parforArg.Limits = [-1 maxWorkers];
         app.parforArg.ValueChangedFcn = createCallbackFcn(app, @refreshClass, true);
         app.parforArg.FontColor = fontColor;
         app.parforArg.BackgroundColor = darkBackgroundColor;
         app.parforArg.Tooltip = {'Number of worker used for the video rendering (depends of the working station)'};
-        app.parforArg.Value = 10;
+        app.parforArg.Value = min(10, maxWorkers);
         app.parforArg.Layout.Row = 8;
         app.parforArg.Layout.Column = 2;
 
@@ -1063,7 +1240,7 @@ methods (Access = private)
         % Column 11
 
         app.AdvancedButton = uibutton(app.mainParametersGrid, 'push', ...
-            'Text', '📎 Advanced', ...
+            'Text', 'Advanced', ...
             'ButtonPushedFcn', createCallbackFcn(app, @AdvancedButtonPushed, true), ...
             'Tooltip', {'Advanced settings'}, ...
             'BackgroundColor', grayButtonColor, ...
@@ -1072,7 +1249,7 @@ methods (Access = private)
         app.AdvancedButton.Layout.Column = 1;
 
         app.RefreshAppButton = uibutton(app.mainParametersGrid, 'push', ...
-            'Text', '👌 Refresh app', ...
+            'Text', 'Refresh app', ...
             'ButtonPushedFcn', createCallbackFcn(app, @RefreshAppButtonPushed, true), ...
             'Tooltip', {'Refresh the app'}, ...
             'BackgroundColor', grayButtonColor, ...
@@ -1647,7 +1824,7 @@ methods (Access = public)
         % Handles NumericEditField, CheckBox, DropDown, ListBox, Spinner.
         w = app.(widgetName);
 
-        if isempty(w)
+        if isempty(w) || ~isvalid(w)
             value = [];
         elseif isa(w, 'matlab.ui.control.CheckBox')
             value = logical(w.Value);
@@ -1667,7 +1844,7 @@ methods (Access = public)
         % Set the value of the UI widget named widgetName.
         w = app.(widgetName);
 
-        if isempty(w)
+        if isempty(w) || ~isvalid(w)
             return
         end
 
@@ -1692,7 +1869,8 @@ methods (Access = public)
             end
 
         elseif isa(w, 'matlab.ui.control.NumericEditField') || isa(w, 'matlab.ui.control.Spinner')
-            w.Value = double(value(1));
+            v = double(value(1));
+            w.Value = min(max(v, w.Limits(1)), w.Limits(2));
         else
             w.Value = value;
         end
@@ -1705,7 +1883,13 @@ methods (Access = public)
         s = app.(widgetName);
 
         if isa(s, 'matlab.ui.control.Slider')
-            s.Limits = double(limits);
+            limits = double(limits);
+
+            if limits(2) <= limits(1)
+                limits(2) = limits(1) + 1;
+            end
+
+            s.Limits = limits;
         end
 
     end

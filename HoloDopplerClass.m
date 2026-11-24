@@ -442,21 +442,24 @@ methods
         images = obj.render.getImages(imageTypes);
 
         for i = 1:numel(images)
-            if isempty(images{i}), continue; end
+
+            if isempty(images{i})
+                continue
+            end
+
+            % Convert first: imresize must not receive scientific NaNs.
+            preview = toImageSource(images{i});
 
             if ~ismember(imageTypes{i}, ...
                     {'moment_0', 'moment_1', 'moment_2', 'SVD_cov', 'SVD_U', ...
                      'FH_modulus_mean', 'FH_arg_mean', 'broadening'})
-                max_dim = max(size(images{i}, 1), size(images{i}, 2));
-                imwrite(toImageSource(imresize(images{i}, [max_dim, max_dim])), ...
-                    fullfile(result_folder_path, ...
-                    strcat(obj.file.name, '_', imageTypes{i}, '.png')));
-            else
-                imwrite(toImageSource(images{i}), ...
-                    fullfile(result_folder_path, ...
-                    strcat(obj.file.name, '_', imageTypes{i}, '.png')));
+
+                max_dim = max(size(preview, 1), size(preview, 2));
+                preview = imresize(preview, [max_dim, max_dim]);
             end
 
+            imwrite(preview, fullfile(result_folder_path, ...
+                strcat(obj.file.name, '_', imageTypes{i}, '.png')));
         end
 
         % Save params snapshot alongside the preview.
@@ -556,6 +559,7 @@ methods
         fprintf("Using %d worker(s).\n", numWorkers);
 
         h = waitbar(0, 'Initializing video rendering...');
+        styleWaitbar(h);
         closeWaitbar = onCleanup(@() closeWaitbarSafe(h));
 
         progress = 0;
@@ -756,13 +760,14 @@ methods
         VideoSavingTime = tic;
         disp('Saving video...');
         h = waitbar(0, 'Saving video...');
+        styleWaitbar(h);
         N = max(double(numel(imageTypes)), 1);
 
         baseOutputDir = fullfile(obj.file.dir, obj.file.name);
         if ~isfolder(baseOutputDir), mkdir(baseOutputDir); end
 
         result_folder_path = fullfile(baseOutputDir, ...
-            sprintf('%s_HD', obj.file.name));
+            sprintf('%s_HD_MATLAB', obj.file.name));
         if ~isfolder(result_folder_path), mkdir(result_folder_path); end
 
         for sub = {'avi', 'h5', 'png', 'json'}
@@ -1222,7 +1227,10 @@ end
 
 function [config, defaultUnknown] = getConfigs()
 config = struct();
-defaultOpts = struct('temporalFilter', [], 'square', true, 'export_raw', true, ...
+defaultOpts = struct( ...
+    'export_raw', true, ...
+    'temporalFilter', [], ...
+    'square', true, ...
     'substractFlash', true, 'enhance_contrast', true, ...
     'contrast_inversion', false, 'cornerNorm', false, 'export_avg_img', true);
 
