@@ -264,8 +264,6 @@ methods (Static, Access = private)
         'phase_registration', 'phaseregistrationCheckBox', 'checkbox', false, [], [];
         'iterative_registration', 'iterativeregistrationCheckBox', 'checkbox', false, [], [];
         'show_ref', 'showrefCheckBox', 'checkbox', false, [], [];
-        'bucketsRanges', '', 'numeric', [], [], [];
-        'buckets_raw', 'bucketsraw', 'checkbox', false, [], [];
         };
 
         schema = struct( ...

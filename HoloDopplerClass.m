@@ -828,54 +828,6 @@ methods
 
                 continue
 
-            elseif strcmp(imageTypes{i}, 'buckets')
-                sz = size(tmp{1}.parameters.intervals_0);
-                sz(3) = length(tmp);
-                buckranges = reshape(params.bucketsRanges, [], 2);
-                numranges = size(buckranges, 1);
-                mat0 = zeros(sz, 'single');
-                mat1 = zeros(sz, 'single');
-                mat2 = zeros(sz, 'single');
-                mat_0 = zeros(sz, 'single');
-
-                for j = 1:length(tmp)
-
-                    for k = 1:numranges
-                        mat0 (:, :, j, k) = tmp{j}.parameters.intervals_0(:, :, :, k);
-                        mat1 (:, :, j, k) = tmp{j}.parameters.intervals_1(:, :, :, k);
-                        mat2 (:, :, j, k) = tmp{j}.parameters.intervals_2(:, :, :, k);
-                        mat_0(:, :, j, k) = tmp{j}.parameters.M0(:, :, :, k);
-                    end
-
-                end
-
-                export_h5_video(h5path, "bucket_intervals_0", single(mat0));
-                export_h5_video(h5path, "bucket_intervals_1", single(mat1));
-                export_h5_video(h5path, "bucket_intervals_2", single(mat2));
-                export_h5_video(h5path, "bucket_M0", single(mat_0));
-
-                continue
-
-            elseif strcmp(imageTypes{i}, 'full_buckets')
-                sz = size(tmp{1}.parameters.SH_full);
-                numSl = sz(3);
-                sz(4) = length(tmp);
-                mat_ = zeros(sz, 'single');
-
-                for j = 1:length(tmp)
-
-                    for k = 1:numSl
-                        mat_(:, :, k, j) = tmp{j}.parameters.SH_full(:, :, k);
-                    end
-
-                end
-
-                [~, output_dirname] = fileparts(result_folder_path);
-                output_filename_h5 = sprintf('%s_%s.h5', output_dirname, 'output');
-                export_h5_video( ...
-                    fullfile(result_folder_path, 'h5', output_filename_h5), ...
-                    "SH_Slices", single(mat_));
-                continue
             elseif strcmp(imageTypes{i}, 'SH_avg')
 
                 if obj.running_averages.numUpdates == 0
@@ -904,8 +856,13 @@ methods
 
             else
                 sz = size(tmp{1}.image);
-                if length(sz) == 2, sz = [sz 1]; end
-                sz(end + 1) = length(tmp); %#ok<AGROW>
+
+                if length(sz) == 2
+                    sz = [sz 1];
+                end
+
+                sz(end + 1) = length(tmp);
+
                 mat = zeros(sz, 'single');
 
                 for j = 1:length(tmp)
@@ -1077,51 +1034,6 @@ methods
 
                 continue
 
-            elseif strcmp(itype, 'buckets')
-                sz = size(obj.video(1).buckets.parameters.intervals_0);
-
-                if numel(sz) > 3
-                    numF = sz(4);
-                else
-                    numF = 1;
-                end
-
-                ratio = [sz(1) sz(2)] ./ size(pdImage);
-
-                for i = 1:num_batches
-
-                    for k = 1:numF
-                        shift = floor(obj.registration.shifts(:, i) .* ratio');
-                        obj.video(i).('buckets').parameters.intervals_0(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_0(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.intervals_1(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_1(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.intervals_2(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.intervals_2(:, :, :, k), shift);
-                        obj.video(i).('buckets').parameters.M0(:, :, :, k) = ...
-                            circshift(obj.video(i).('buckets').parameters.M0(:, :, :, k), shift);
-                    end
-
-                end
-
-                continue
-
-            elseif strcmp(itype, 'full_buckets')
-                sz = size(obj.video(1).full_buckets.parameters.SH_full);
-                ratio = [sz(1) sz(2)] ./ size(pdImage);
-
-                for i = 1:num_batches
-
-                    for k = 1:sz(3)
-                        obj.video(i).('full_buckets').parameters.SH_full(:, :, k) = ...
-                            circshift( ...
-                            obj.video(i).('full_buckets').parameters.SH_full(:, :, k), ...
-                            floor(obj.registration.shifts(:, i) .* ratio'));
-                    end
-
-                end
-
-                continue
             end
 
             try

@@ -14,6 +14,8 @@ if ~isfolder(png_dir)
 end
 
 [~, folder_name] = fileparts(output_path);
+
+% Average first
 output_file = fullfile(png_dir, ...
     sprintf('%s_%s.png', folder_name, name));
 
@@ -21,21 +23,22 @@ if isfile(output_file)
     delete(output_file)
 end
 
-% Average first, then interpolate each channel once.
-avg = double(mean(video, 4));
-
-video_avg = zeros( ...
-    2 * size(avg, 1) - 1, ...
-    2 * size(avg, 2) - 1, ...
-    size(avg, 3));
-
-for channel = 1:size(avg, 3)
-    video_avg(:, :, channel) = interp2(avg(:, :, channel), 1);
-end
-
-video_avg = mat2gray(video_avg);
+video_avg = double(mean(video, 4));
 
 fprintf('Saving PNG: %s\n', output_file);
 imwrite(video_avg, output_file);
+
+% STD second
+output_file = fullfile(png_dir, ...
+    sprintf('%s_%s_std.png', folder_name, name));
+
+if isfile(output_file)
+    delete(output_file)
+end
+
+video_std = std(video, 0, 4);
+
+fprintf('Saving STD PNG: %s\n', output_file);
+imwrite(video_std, output_file);
 
 end

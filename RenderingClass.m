@@ -1,19 +1,10 @@
 classdef RenderingClass < handle
-% Holographic renderer.
-%
-%   r = RenderingClass()
-%   r = RenderingClass('precomputeSpatialKernel', kernel)
-%
-% Pipeline:
-%   Frames -> spatial filtering -> spatial propagation -> H_raw
-%          -> clutter filtering -> H -> time transform -> SH
-%          -> image construction
-%
-% Clutter filtering always starts from H_raw, never from a previously
-% filtered H.
+% Holographic rendering pipeline:
+% Frames -> spatial filtering -> H_raw -> clutter filter -> H -> SH -> images
 
 properties
     LastParams struct
+
     Frames single
     FramesChanged logical = false
 
@@ -33,14 +24,9 @@ properties
 end
 
 properties (Access = private)
-    lastLambda single = []
-    lastPpx single = []
-    lastPpy single = []
+    KernelParams struct = struct()
 end
 
-% -------------------------------------------------------------------------
-% Public interface
-% -------------------------------------------------------------------------
 methods
 
     function obj = RenderingClass(options)
@@ -53,32 +39,29 @@ methods
         obj.setInitParams();
 
         if ~isempty(options.precomputeSpatialKernel)
-            obj.SpatialKernel = single(options.precomputeSpatialKernel);
+            obj.SpatialKernel = single( ...
+                options.precomputeSpatialKernel);
         end
 
     end
 
     function setInitParams(obj)
+        p = HDParamSchema.getDefaults();
 
-        obj.LastParams = HDParamSchema.getDefaults();
-
-        % Permit use before the schema has been extended.
-        if ~isfield(obj.LastParams, 'filterType')
-            obj.LastParams.filterType = ...
-                char(ClutterFilter.resolveType(obj.LastParams));
+        if ~isfield(p, 'filterType')
+            p.filterType = char(ClutterFilter.resolveType(p));
         end
 
-        if ~isfield(obj.LastParams, 'polynomialDegree')
-            obj.LastParams.polynomialDegree = 1;
+        if ~isfield(p, 'polynomialDegree')
+            p.polynomialDegree = 1;
         end
 
+        obj.LastParams = p;
     end
 
     function setFrames(obj, frames)
-
         obj.Frames = single(frames);
         obj.FramesChanged = true;
-
     end
 
     function Render(obj, p, imageTypes, options)
@@ -98,199 +81,257 @@ methods
         obj.validateImageTypes(imageTypes);
         obj.Output.select(imageTypes{:});
 
-        [p, changed] = obj.mergeAndDiff(p);
+        [p, changed] = obj.mergeParams(p);
+        force = ~options.cache_intermediate_results;
 
-        [Nx, Ny, batchSize] = size(obj.Frames);
+        % Spatial reconstruction.
+        spatialFields = {
+                         'spatialFilter'
+                         'spatialFilterRange1'
+                         'spatialFilterRange2'
+                         'PaddingNum'
+                         'spatialTransform'
+                         'spatialPropagation'
+                         'lambda'
+                         'ppx'
+                         'ppy'
+                         };
 
-        % -----------------------------------------------------------------
-        % Spatial filtering
-        % -----------------------------------------------------------------
-        obj.applySpatialFilter(p, changed, Nx, Ny);
-
-        % -----------------------------------------------------------------
-        % Spatial propagation
-        % -----------------------------------------------------------------
-        doFH = obj.FramesChanged || ...
+        doSpatial = force || ...
+            obj.FramesChanged || ...
             isempty(obj.H_raw) || ...
-            changed.PaddingNum || ...
-            changed.spatialTransform || ...
-            changed.spatialPropagation || ...
-            ~options.cache_intermediate_results;
+            obj.anyChanged(changed, spatialFields);
 
-        obj.applySpatialTransform(p, changed, doFH, Nx, Ny);
+        obj.checkFinite(obj.Frames, 'Frames');
 
+        if doSpatial
+            obj.reconstruct(p, changed);
+        end
+
+        obj.checkFinite(obj.H_raw, 'H_raw after spatial reconstruction');
         obj.Output.construct_image_from_FH(p, obj.FH);
 
-        if ~options.cache_intermediate_results
-            obj.FH = [];
-        end
-
-        % -----------------------------------------------------------------
-        % Clutter filtering
-        % -----------------------------------------------------------------
-        filterFields = { ...
-                            'filterType', ...
-                            'svd_filter', ...
-                            'svdThreshold', ...
-                            'svdStride', ...
-                            'polynomialDegree', ...
-                            'frequencyRange1', ...
-                            'frequencyRange2', ...
-                            'fs', ...
-                            'filterCutoffHz', ...
-                            'filterOrder', ...
-                            'filterZeroPhase', ...
-                            'filterLowHz', ...
-                            'filterHighHz', ...
-                            'filterTransitionHz' ...
+        % Clutter filtering.
+        filterFields = {
+                        'filterType'
+                        'svd_filter'
+                        'svdThreshold'
+                        'svdStride'
+                        'polynomialDegree'
+                        'frequencyRange1'
+                        'frequencyRange2'
+                        'fs'
+                        'filterCutoffHz'
+                        'filterOrder'
+                        'filterZeroPhase'
+                        'filterLowHz'
+                        'filterHighHz'
+                        'filterTransitionHz'
                         };
 
-        filterChanged = false;
+        doFilter = force || ...
+            doSpatial || ...
+            isempty(obj.H) || ...
+            obj.anyChanged(changed, filterFields);
 
-        for k = 1:numel(filterFields)
-            name = filterFields{k};
+        if doFilter
+            [obj.H, diagnostics] = ...
+                ClutterFilter.apply(obj.H_raw, p);
 
-            if isfield(changed, name)
-                filterChanged = filterChanged || changed.(name);
-            end
-
+            obj.cov = diagnostics.cov;
+            obj.U = diagnostics.U;
         end
 
-        doFilter = doFH || ...
-            filterChanged || ...
-            isempty(obj.H) || ...
-            ~options.cache_intermediate_results;
+        obj.checkFinite(obj.H, 'H after clutter filtering');
 
-        obj.applyClutterFilter(p, doFilter);
-
-        % Non-SVD filters return empty SVD diagnostics.
         obj.Output.construct_image_from_SVD( ...
             p, obj.cov, obj.U, size(obj.H));
 
-        % -----------------------------------------------------------------
-        % Time transform
-        % -----------------------------------------------------------------
-        doSH = doFilter || ...
+        % Temporal transformation.
+        timeFields = {'timeTransform', 'flip_y', 'flip_x'};
+
+        doTime = force || ...
+            doFilter || ...
             isempty(obj.SH) || ...
-            changed.timeTransform || ...
-            changed.flip_y || ...
-            changed.flip_x || ...
-            ~options.cache_intermediate_results;
+            obj.anyChanged(changed, timeFields);
 
-        obj.applyTimeTransform(p, doSH, batchSize);
-
-        if ~options.cache_intermediate_results
-            obj.H = [];
-            obj.H_raw = [];
-        end
-
-        if doSH
+        if doTime
+            obj.transformTime(p);
+            obj.checkFinite(obj.SH, 'SH after time transform');
             obj.orientOutput(p);
+        else
+            obj.checkFinite(obj.SH, 'SH from cache');
         end
 
-        % -----------------------------------------------------------------
-        % Image construction
-        % -----------------------------------------------------------------
+        % Image construction.
         obj.Output.construct_image(p, obj.SH);
 
+        % Commit cache state only after successful rendering.
         obj.FramesChanged = false;
         obj.LastParams = p;
 
+        if force
+            obj.FH = [];
+            obj.H_raw = [];
+            obj.H = [];
+        end
+
     end
 
-    function r = getImages(obj, imageTypes)
-        % Return normalised images without recomputing the pipeline.
-
+    function images = getImages(obj, imageTypes)
         obj.validateImageTypes(imageTypes);
-        r = obj.collectImages(imageTypes);
+
+        silent = {'SH', 'SH_avg'};
+        images = cell(size(imageTypes));
+
+        for k = 1:numel(imageTypes)
+            name = imageTypes{k};
+            image = obj.Output.(name).image;
+
+            if isempty(image)
+
+                if ~ismember(name, silent)
+                    fprintf("Warning: '%s' produced no image.\n", name);
+                end
+
+            else
+                images{k} = mat2gray(image);
+            end
+
+        end
 
     end
 
 end
 
-% -------------------------------------------------------------------------
-% Private methods
-% -------------------------------------------------------------------------
 methods (Access = private)
 
-    function [p, changed] = mergeAndDiff(obj, p)
-        % Resolve legacy selection before merging with previous parameters.
-        %
-        % An explicit filterType always takes precedence.
-        % If neither filterType nor svd_filter is supplied, retain the
-        % previous selection through the normal merge below.
-
+    function [p, changed] = mergeParams(obj, p)
+        % Explicit filterType takes precedence over legacy svd_filter.
         if ~isfield(p, 'filterType') && isfield(p, 'svd_filter')
             p.filterType = char(ClutterFilter.resolveType(p));
         end
 
+        previous = obj.LastParams;
+        names = union(fieldnames(previous), fieldnames(p));
         changed = struct();
-        fields = fieldnames(obj.LastParams);
 
-        for i = 1:numel(fields)
-            name = fields{i};
+        for k = 1:numel(names)
+            name = names{k};
 
-            if isfield(p, name)
-                changed.(name) = ...
-                    ~isequal(p.(name), obj.LastParams.(name));
-            else
+            if ~isfield(p, name)
+                p.(name) = previous.(name);
                 changed.(name) = false;
-                p.(name) = obj.LastParams.(name);
+            else
+                changed.(name) = ~isfield(previous, name) || ...
+                    ~isequaln(p.(name), previous.(name));
             end
 
         end
 
-        newFields = setdiff(fieldnames(p), fields);
+    end
 
-        for i = 1:numel(newFields)
-            changed.(newFields{i}) = true;
+    function result = anyChanged(~, changed, names)
+        result = false;
+
+        for k = 1:numel(names)
+            name = names{k};
+
+            if isfield(changed, name) && changed.(name)
+                result = true;
+                return
+            end
+
         end
 
     end
 
-    function applySpatialFilter(obj, p, changed, Nx, Ny)
+    function reconstruct(obj, p, changed)
+        [Nx, Ny, ~] = size(obj.Frames);
 
-        filterParamsChanged = changed.spatialFilter || ...
-            changed.spatialFilterRange1 || ...
-            changed.spatialFilterRange2;
+        % Filter a working copy; preserve source frames.
+        frames = obj.Frames;
 
-        if ~(filterParamsChanged || obj.FramesChanged) || ~p.spatialFilter
-            return
-        end
-
-        if filterParamsChanged || ...
-                obj.FramesChanged || ...
-                isempty(obj.SpatialFilterMask)
-
+        if p.spatialFilter
             obj.SpatialFilterMask = fftshift( ...
-                diskMask( ...
-                Nx, Ny, ...
+                diskMask(Nx, Ny, ...
                 p.spatialFilterRange1, ...
                 p.spatialFilterRange2))';
+
+            if ~isequal(size(obj.SpatialFilterMask), [Nx Ny])
+                error('RenderingClass:InvalidSpatialMask', ...
+                'Spatial filter mask must match the frame dimensions.');
+            end
+
+            frames = ifft2(fft2(frames) .* obj.SpatialFilterMask);
+            obj.checkFinite(frames, 'Frames after spatial filter');
         end
 
-        obj.Frames = ifft2( ...
-            fft2(obj.Frames) .* obj.SpatialFilterMask);
+        obj.updateKernel(p, Nx, Ny);
+
+        switch string(p.spatialTransform)
+
+            case "angular spectrum"
+                ND = max([p.PaddingNum, Nx, Ny]);
+
+                padded = single(pad3DToSquare(frames, ND));
+                obj.FH = fft2(padded) .* fftshift(obj.SpatialKernel);
+
+                obj.H_raw = ifft2(obj.FH) .* sqrt(Nx * Ny);
+
+            case "Fresnel"
+                NxP = max(p.PaddingNum, Nx);
+                NyP = max(p.PaddingNum, Ny);
+
+                if p.PaddingNum > 0
+                    frames = single( ...
+                        pad3DToSquare(frames, p.PaddingNum));
+                end
+
+                obj.FH = frames .* obj.SpatialKernel;
+
+                field = fft2(obj.FH);
+                field = fftshift(fftshift(field, 1), 2);
+
+                obj.H_raw = field ./ sqrt(NxP * NyP);
+
+            case "None"
+                obj.FH = [];
+                obj.H_raw = frames;
+
+            case "twin image removal"
+                obj.FH = [];
+                obj.H_raw = twin_image_removal_( ...
+                    frames, [], changed, p);
+
+            otherwise
+                error('RenderingClass:UnknownSpatialTransform', ...
+                    'Unknown spatial transform: "%s".', ...
+                    string(p.spatialTransform));
+        end
 
     end
 
-    function applySpatialTransform(obj, p, changed, doFH, Nx, Ny)
+    function updateKernel(obj, p, Nx, Ny)
+        transform = string(p.spatialTransform);
 
-        if ~doFH
+        if ~ismember(transform, ["angular spectrum", "Fresnel"])
             return
         end
 
-        kernelChanged = changed.spatialPropagation || ...
-            changed.PaddingNum || ...
-            changed.spatialTransform;
+        current = struct( ...
+            'transform', transform, ...
+            'padding', p.PaddingNum, ...
+            'propagation', p.spatialPropagation, ...
+            'lambda', p.lambda, ...
+            'ppx', p.ppx, ...
+            'ppy', p.ppy, ...
+            'frameSize', [Nx Ny]);
 
-        opticalChanged = ~isequal(p.lambda, obj.lastLambda) || ...
-            ~isequal(p.ppx, obj.lastPpx) || ...
-            ~isequal(p.ppy, obj.lastPpy);
+        if isempty(obj.SpatialKernel) || ...
+                ~isequaln(current, obj.KernelParams)
 
-        if kernelChanged || opticalChanged || isempty(obj.SpatialKernel)
-
-            switch p.spatialTransform
+            switch transform
 
                 case "angular spectrum"
                     ND = max([p.PaddingNum, Nx, Ny]);
@@ -299,10 +340,9 @@ methods (Access = private)
                         propagation_kernelAngularSpectrum( ...
                         ND, ND, ...
                         p.spatialPropagation, ...
-                        p.lambda, ...
-                        p.ppx, ...
-                        p.ppy, ...
-                        0);
+                        p.lambda, p.ppx, p.ppy, 0);
+
+                    obj.PhaseFactor = [];
 
                 case "Fresnel"
                     NxP = max(p.PaddingNum, Nx);
@@ -312,153 +352,63 @@ methods (Access = private)
                         propagation_kernelFresnel( ...
                         NyP, NxP, ...
                         p.spatialPropagation, ...
-                        p.lambda, ...
-                        p.ppx, ...
-                        p.ppy, ...
-                        0);
-
-                otherwise
-                    % Other transforms do not use these kernels.
+                        p.lambda, p.ppx, p.ppy, 0);
             end
 
-            obj.lastLambda = p.lambda;
-            obj.lastPpx = p.ppx;
-            obj.lastPpy = p.ppy;
-
+            obj.KernelParams = current;
         end
 
-        switch p.spatialTransform
-
-            case "angular spectrum"
-                ND = max([p.PaddingNum, Nx, Ny]);
-
-                hologram_fft = fft2( ...
-                    single(pad3DToSquare(obj.Frames, ND)));
-
-                propagated_fft = ...
-                    hologram_fft .* fftshift(obj.SpatialKernel);
-
-                reconstructed_field = ...
-                    ifft2(propagated_fft) .* sqrt(Nx * Ny);
-
-                obj.FH = propagated_fft;
-                obj.H_raw = reconstructed_field;
-
-            case "Fresnel"
-                NxP = max(p.PaddingNum, Nx);
-                NyP = max(p.PaddingNum, Ny);
-
-                if p.PaddingNum > 0
-                    padded = single( ...
-                        pad3DToSquare(obj.Frames, p.PaddingNum));
-                else
-                    padded = single(obj.Frames);
-                end
-
-                propagated_fft = padded .* obj.SpatialKernel;
-
-                reconstructed_field = ...
-                    fftshift( ...
-                    fftshift(fft2(propagated_fft), 1), ...
-                    2) ./ sqrt(NxP * NyP);
-
-                obj.FH = propagated_fft;
-                obj.H_raw = reconstructed_field;
-
-            case "None"
-                obj.FH = [];
-                obj.H_raw = single(obj.Frames);
-
-            case "twin image removal"
-                obj.FH = [];
-
-                reconstructed_field = twin_image_removal_( ...
-                    single(obj.Frames), [], changed, p);
-
-                obj.H_raw = reconstructed_field;
-
-            otherwise
-                error('RenderingClass:UnknownSpatialTransform', ...
-                    'Unknown spatial transform: "%s".', ...
-                    p.spatialTransform);
-        end
-
+        obj.checkFinite(obj.SpatialKernel, 'Spatial propagation kernel');
     end
 
-    function applyClutterFilter(obj, p, doFilter)
+    function transformTime(obj, p)
+        [Nx, Ny, N] = size(obj.H);
 
-        if ~doFilter
-            return
-        end
+        switch string(p.timeTransform)
 
-        if isempty(obj.H_raw)
-            error('RenderingClass:MissingRawField', ...
-                ['The unfiltered reconstructed field must be ', ...
-             'available before clutter filtering.']);
-        end
+            case "FFT"
+                obj.SH = fft(obj.H, [], 3) ./ sqrt(N);
 
-        [obj.H, diagnostics] = ...
-            ClutterFilter.apply(obj.H_raw, p);
-
-        obj.cov = diagnostics.cov;
-        obj.U = diagnostics.U;
-
-    end
-
-    function applyTimeTransform(obj, p, doSH, batchSize)
-
-        if ~doSH
-            return
-        end
-
-        [a, b, ~] = size(obj.H);
-
-        switch p.timeTransform
-
-            case 'PCA'
+            case "PCA"
                 obj.SH = short_time_PCA(obj.H);
 
-            case 'ICA'
+            case "ICA"
                 obj.SH = short_time_ICA(obj.H);
 
-            case 'FFT'
-                obj.SH = fft(obj.H, [], 3) ./ sqrt(batchSize);
-
-            case 'Wavelet_Morlet'
+            case "Wavelet_Morlet"
                 obj.SH = morlet1D_transform_3rdDim(obj.H, [], 3);
 
-            case 'autocorrelation'
-                tmp = reshape(obj.H, a * b, []);
+            case "autocorrelation"
+                signals = reshape(obj.H, Nx * Ny, N);
 
-                out = arrayfun( ...
-                    @(k) xcorr(tmp(k, :), 'normalized'), ...
-                    1:a * b, ...
+                correlations = arrayfun( ...
+                    @(k) xcorr(signals(k, :), 'normalized'), ...
+                    1:Nx * Ny, ...
                     'UniformOutput', false);
 
                 obj.SH = permute( ...
-                    reshape(cell2mat(out), [], a, b), ...
+                    reshape(cell2mat(correlations), [], Nx, Ny), ...
                     [2 3 1]);
 
-            case 'intercorrelation'
+            case "intercorrelation"
                 obj.SH = intercorrel(obj.H, 3);
 
-            case 'phase difference'
+            case "phase difference"
                 obj.SH = angle(obj.H);
 
-            case 'None'
+            case "None"
                 obj.SH = obj.H;
 
             otherwise
                 error('RenderingClass:UnknownTimeTransform', ...
                     'Unknown time transform: "%s".', ...
-                    p.timeTransform);
+                    string(p.timeTransform));
         end
 
     end
 
     function orientOutput(obj, p)
-        % Lens transpose: x <-> -y.
-
+        % Lens orientation: x <-> -y.
         obj.SH = flip(permute(obj.SH, [2 1 3]), 2);
 
         if p.flip_y
@@ -471,46 +421,37 @@ methods (Access = private)
 
     end
 
-    function validateImageTypes(obj, imageTypes)
+    function validateImageTypes(obj, names)
 
-        for i = 1:numel(imageTypes)
+        for k = 1:numel(names)
 
-            if ~isprop(obj.Output, imageTypes{i})
-                known = sprintf( ...
-                    '%s, ', string(fieldnames(obj.Output)));
+            if ~isprop(obj.Output, names{k})
+                known = strjoin(fieldnames(obj.Output), ', ');
 
                 error('RenderingClass:UnknownImageType', ...
-                    ['"%s" is not a known image type. ', ...
-                 'Available: [%s]'], ...
-                    imageTypes{i}, known);
+                    'Unknown image type "%s". Available: %s.', ...
+                    names{k}, known);
             end
 
         end
 
     end
 
-    function r = collectImages(obj, imageTypes)
+    function checkFinite(~, A, stage)
 
-        silent = {'buckets', 'full_buckets', 'SH', 'SH_avg'};
-        r = cell(1, numel(imageTypes));
+        if isempty(A)
+            error('RenderingClass:EmptyStage', ...
+                'Empty array at stage "%s".', stage);
+        end
 
-        for i = 1:numel(imageTypes)
-            im = obj.Output.(imageTypes{i}).image;
+        nNaN = nnz(isnan(A));
+        nInf = nnz(isinf(A));
 
-            if isempty(im)
-
-                if ~ismember(imageTypes{i}, silent)
-                    fprintf( ...
-                        'Warning: ''%s'' produced no image.\n', ...
-                        imageTypes{i});
-                end
-
-                r{i} = [];
-
-            else
-                r{i} = mat2gray(im);
-            end
-
+        if nNaN > 0 || nInf > 0
+            error('RenderingClass:NonfiniteStage', ...
+                ['Nonfinite data at stage "%s": ' ...
+             '%d NaN, %d Inf / %d samples.'], ...
+                stage, nNaN, nInf, numel(A));
         end
 
     end

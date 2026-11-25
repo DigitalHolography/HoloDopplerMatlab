@@ -10,7 +10,6 @@
     "color_Doppler",
     "directional_Doppler",
     "broadening",
-    "buckets",
     "power_Doppler_wiener",
     "power_adapt"
   ],
@@ -19,8 +18,8 @@
   "imageRegistration": true,
   "lambda": 8.52E-7,
   "fs": 78,
-  "ppx": 1.9400147441120552E-5,
-  "ppy": 1.9400147441120552E-5,
+  "ppx": 2E-5,
+  "ppy": 2E-5,
   "spatialTransform": "Fresnel",
   "spatialPropagation": 1.25,
   "frequencyRange1": 6,
@@ -29,11 +28,6 @@
   "svdThreshold": 0,
   "timeTransform": "FFT",
   "flatfield_gw": 35,
-  "bucketsRanges": [
-    3,
-    39
-  ],
-  "buckets_raw": false,
   "flip_y": true,
   "flip_x": true,
   "square": true,

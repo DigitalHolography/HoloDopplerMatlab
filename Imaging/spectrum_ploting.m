@@ -8,14 +8,38 @@ spectrumAVG_mask = squeeze(sum(SH_mask, [1 2])) / nnz(mask);
 momentM0 = moment0(SH, f1, f2, fs, size(SH_mask, 3));
 momentM2 = moment2(SH, f1, f2, fs, size(SH_mask, 3));
 
-M0 = mean(momentM0, "all");
-M2 = mean(momentM2(mask), "all");
+% Use the same spatial region for both spectral moments.
+roi = logical(mask);
 
-omegaRMS = sqrt(M2 / M0); % sqrt(M2/M0);
-omegaRMS_index = omegaRMS * size(SH_mask, 3) / fs;
-I_omega = log10(spectrumAVG_mask(round(omegaRMS_index)));
+M0 = mean(momentM0(roi), "all");
+M2 = mean(momentM2(roi), "all");
 
-axis_x = linspace(-fs / 2, fs / 2, size(SH_mask, 3));
+if ~isfinite(M0) || M0 <= 0 || ~isfinite(M2) || M2 < 0
+    error('spectrum_ploting:InvalidMoments', ...
+        ['Cannot compute spectral RMS: M0=%g, M2=%g. ' ...
+     'Check the spatial mask, frequency band, and input spectrum.'], ...
+        M0, M2);
+end
+
+omegaRMS = sqrt(M2 / M0);
+
+% Find the closest nonnegative FFT frequency.
+N = size(SH_mask, 3);
+f = fftfreq(N, 1 / fs);
+positiveBins = find(f >= 0);
+
+[~, nearestBin] = min(abs(f(positiveBins) - omegaRMS));
+omegaRMS_index = positiveBins(nearestBin);
+
+spectralValue = spectrumAVG_mask(omegaRMS_index);
+
+if ~isfinite(spectralValue) || spectralValue <= 0
+    I_omega = NaN;
+else
+    I_omega = log10(spectralValue);
+end
+
+axis_x = fftshift(f(:));
 range_1 = (-f2 < axis_x) & (axis_x <- f1);
 range_2 = (f1 < axis_x) & (axis_x < f2);
 

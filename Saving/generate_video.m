@@ -150,7 +150,7 @@ end
 
 close(w);
 
-% --- Save temporal average image ---
+% --- Save temporal average and standard deviation images ---
 if opt.export_avg_img
     generate_image(video, output_path, name);
 end

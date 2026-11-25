@@ -91,31 +91,6 @@ colorThreshEdit.FontColor = textColor;
 colorThreshEdit.Layout.Row = 4;
 colorThreshEdit.Layout.Column = 1;
 
-% --- Buckets number controls ---
-label4 = uilabel(mainGrid);
-label4.Text = 'Buckets number:';
-label4.FontColor = textColor;
-label4.BackgroundColor = bgColor;
-label4.Layout.Row = 3;
-label4.Layout.Column = 2;
-
-bucketsEdit = uieditfield(mainGrid, 'text');
-buckranges = app.HD.params.bucketsRanges;
-bucketsEdit.Value = mat2str(buckranges);
-bucketsEdit.BackgroundColor = bgColor;
-bucketsEdit.FontColor = textColor;
-bucketsEdit.Layout.Row = 4;
-bucketsEdit.Layout.Column = 2;
-bucketsEdit.ValueChangedFcn = @(src, event) buckEditCallBack(src);
-
-bucketsraw = uicheckbox(mainGrid, ...
-    'Text', 'save raw', ...
-    'FontColor', 'white', ...
-    'Value', app.HD.params.buckets_raw, ...
-    'ValueChangedFcn', @(src, event) updateParam(app, src, 'buckets_raw'));
-bucketsraw.Layout.Row = 3;
-bucketsraw.Layout.Column = 3;
-
 % --- Buttons (Row 5 and 6) ---
 % Show SH button
 showSHbtn = uibutton(mainGrid, 'push');
@@ -170,16 +145,6 @@ fontname(fig, 'Arial');
 fontsize(fig, 12, "points");
 
 % --- Nested helper functions ---
-function buckEditCallBack(src)
-
-    try
-        app.HD.params.bucketsRanges = eval(src.Value);
-        assert(size(app.HD.params.bucketsRanges, 2) == 2);
-    catch E
-        disp("Couldn't get the ranges try to write input frequency ranges like '[[6,18]; [6,25]]' in kHz.")
-    end
-
-end
 
 function showSH_Callback(app)
     app.HD.show_SH();

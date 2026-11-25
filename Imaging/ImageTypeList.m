@@ -1,423 +1,339 @@
 classdef ImageTypeList < handle
-% Registry of every image type the rendering pipeline can produce.
-%
-% Usage pattern:
-%   list.select('power_Doppler', 'directional_Doppler')
-%   ... run pipeline ...
-%   list.construct_image(Params, SH)
-%   img = list.power_Doppler.image;
+% Registry and construction of pipeline images.
 
-% -----------------------------------------------------------------------
 properties
-    % --- Doppler variants -----------------------------------------------
+    % Doppler
     power_Doppler
     power_1_Doppler
     power_2_Doppler
-
-    % --- Spectral moments -----------------------------------------------
-    moment_0
-    moment_1
-    moment_2
-
-    % Computed variables -------------------------------------------------
     color_Doppler
     directional_Doppler
     broadening
     power_Doppler_wiener
     power_adapt
 
-    % --- Spectral moments -----------------------------------------------
+    % Moments
+    moment_0
+    moment_1
+    moment_2
     arg_0
     f_RMS
 
-    % --- Raw / intermediate field ---------------------------------------
+    % Fields
     SH
     SH_avg
     FH_modulus_mean
     FH_arg_mean
 
-    % --- SVD outputs ----------------------------------------------------
+    % SVD
     SVD_cov
     SVD_U
 
-    % --- Spectral statistics --------------------------------------------
+    % Statistics
     cumulative_distribution
     band_ratio
     entropy
 
-    % --- Gaussian estimates ---------------------------------------------
+    % Gaussian estimates
     gaussian_w
     sigma
     h1
     h2
     harmonic_spectrum
 
-    % --- Frequency buckets ----------------------------------------------
-    buckets
-    full_buckets
-
-    % High and low frequency images
+    % Frequency bands
     HF_M0
     LF_M0
 end
 
-% -----------------------------------------------------------------------
 methods
 
     function obj = ImageTypeList()
+        % Property name -> ImageType export name.
+        definitions = {
+                       'power_Doppler', 'power'
+                       'power_1_Doppler', 'power1'
+                       'power_2_Doppler', 'power2'
+                       'color_Doppler', 'color'
+                       'directional_Doppler', 'directional'
+                       'broadening', 'broadening'
+                       'power_Doppler_wiener', 'power_wiener'
+                       'power_adapt', 'power_adapt'
+                       'moment_0', 'M0'
+                       'moment_1', 'M1'
+                       'moment_2', 'M2'
+                       'arg_0', 'arg0'
+                       'f_RMS', 'f_RMS'
+                       'SH', 'SH'
+                       'SH_avg', 'SH_avg'
+                       'FH_modulus_mean', 'FH_modulus_mean'
+                       'FH_arg_mean', 'FH_arg_mean'
+                       'SVD_cov', 'SVD_cov'
+                       'SVD_U', 'SVD_U'
+                       'cumulative_distribution', 'cdf'
+                       'band_ratio', 'energy_ratio'
+                       'entropy', 'entropy'
+                       'gaussian_w', 'gaussian_w'
+                       'sigma', 'sigma'
+                       'h1', 'h1'
+                       'h2', 'h2'
+                       'harmonic_spectrum', 'harmonic_spectrum'
+                       'HF_M0', 'HF_M0'
+                       'LF_M0', 'LF_M0'
+                       };
 
-        % Doppler
-        obj.power_Doppler = ImageType('power', ...
-            struct('M0sqrt', []));
-        obj.power_1_Doppler = ImageType('power1');
-        obj.power_2_Doppler = ImageType('power2');
+        for k = 1:size(definitions, 1)
+            obj.(definitions{k, 1}) = ImageType(definitions{k, 2});
+        end
 
-        obj.color_Doppler = ImageType('color', ...
-            struct('freq_low', [], 'freq_high', []));
-        obj.directional_Doppler = ImageType('directional', ...
-            struct('M0_pos', [], 'M0_neg', []));
+        obj.power_Doppler.parameters = struct('M0sqrt', []);
 
-        obj.broadening = ImageType('broadening');
-        obj.harmonic_spectrum = ImageType('harmonic_spectrum', struct( ...
-            'axis', [], ...
-            'axisLabel', [], ...
-            'inputAxis', [], ...
-            'inputAxisLabel', [], ...
-            'fft', [], ...
-            'harmonicIndices', [], ...
-            'harmonicCoefficients', []));
+        obj.color_Doppler.parameters = struct( ...
+            'freq_low', [], 'freq_high', []);
 
-        obj.power_Doppler_wiener = ImageType('power_wiener');
-        obj.power_adapt = ImageType('power_adapt');
+        obj.directional_Doppler.parameters = struct( ...
+            'M0_pos', [], 'M0_neg', []);
 
-        % Moments
-        obj.moment_0 = ImageType('M0'); % .raw
-        obj.moment_1 = ImageType('M1'); % .raw
-        obj.moment_2 = ImageType('M2'); % .raw
-        obj.arg_0 = ImageType('arg0');
-        obj.f_RMS = ImageType('f_RMS');
-
-        % Raw field
-        obj.SH = ImageType('SH', struct( ...
-            'vector', [], ...
+        fieldParameters = struct( ...
             'SH', [], ...
             'spatial_binning', [], ...
             'original_size', [], ...
             'binned_size', [], ...
             'crop_size', [], ...
-            'reduction', []));
-        obj.SH_avg = ImageType('SH_avg', struct( ...
-            'SH', [], ...
-            'spatial_binning', [], ...
-            'original_size', [], ...
-            'binned_size', [], ...
-            'crop_size', [], ...
-            'reduction', []));
-        obj.FH_modulus_mean = ImageType('FH_modulus_mean');
-        obj.FH_arg_mean = ImageType('FH_arg_mean');
+            'reduction', []);
 
-        % SVD
-        obj.SVD_cov = ImageType('SVD_cov');
-        obj.SVD_U = ImageType('SVD_U');
+        obj.SH.parameters = fieldParameters;
+        obj.SH.parameters.vector = [];
+        obj.SH_avg.parameters = fieldParameters;
 
-        % Spectral statistics
-        obj.cumulative_distribution = ImageType('cdf');
-        obj.band_ratio = ImageType('energy_ratio');
-        obj.entropy = ImageType('entropy');
-        obj.gaussian_w = ImageType('gaussian_w');
-        obj.sigma = ImageType('sigma');
-        obj.h1 = ImageType('h1');
-        obj.h2 = ImageType('h2');
+        obj.harmonic_spectrum.parameters = ...
+            obj.emptyHarmonicParameters();
 
-        % Buckets
-        obj.buckets = ImageType('buckets', struct('intervals_0', [], 'intervals_1', [], ...
-            'intervals_2', [], 'M0', []));
-        obj.full_buckets = ImageType('full_buckets', struct('SH_full', []));
-
-        % High and low frequency images
-        obj.HF_M0 = ImageType('HF_M0'); % .raw
-        obj.LF_M0 = ImageType('LF_M0'); % .raw
     end
 
-    % ------------------------------------------------------------------
     function clear(obj, varargin)
-        % clear()          – clear all image types
-        % clear(n1, n2, …) – clear only the named types
-        targets = obj.resolveTargets(varargin);
+        names = obj.targetNames(varargin);
 
-        for k = 1:numel(targets)
-            obj.(targets{k}).clear();
+        for k = 1:numel(names)
+            obj.(names{k}).clear();
         end
 
     end
 
-    % ------------------------------------------------------------------
     function select(obj, varargin)
-        % select()          – deselect all (same as clear)
-        % select('all')     – select all
-        % select(n1, n2, …) – select only named types (all others cleared first)
-        obj.clearAll();
+        obj.clear();
 
-        if nargin == 1
-            return % caller wants nothing selected
-        end
-
-        if isscalar(varargin) && ...
-                strcmpi(string(varargin{1}), "all")
-            allFields = fieldnames(obj);
-
-            for k = 1:numel(allFields)
-                obj.(allFields{k}).select();
-            end
-
+        if isempty(varargin)
             return
         end
 
-        for k = 1:numel(varargin)
-            obj.(varargin{k}).select();
+        names = obj.targetNames(varargin);
+
+        for k = 1:numel(names)
+            obj.(names{k}).select();
         end
 
     end
 
-    % ------------------------------------------------------------------
     function copy_from(obj, src)
-        fields = fieldnames(src);
+        names = fieldnames(src);
 
-        for k = 1:numel(fields)
-            obj.(fields{k}).copy_from(src.(fields{k}));
+        for k = 1:numel(names)
+            obj.(names{k}).copy_from(src.(names{k}));
         end
 
     end
 
-    % ------------------------------------------------------------------
-    function images2png(obj, preview_folder_name, folder_path, varargin)
-        % images2png(pfx, dir)          – save all selected images
-        % images2png(pfx, dir, n1, …)   – save only named (if selected)
-        if isempty(varargin)
-            targets = fieldnames(obj);
-        else
-            targets = varargin;
-        end
+    function images2png(obj, prefix, folder, varargin)
+        names = obj.targetNames(varargin);
 
-        for k = 1:numel(targets)
-            slot = obj.(targets{k});
+        for k = 1:numel(names)
+            slot = obj.(names{k});
 
             if slot.is_selected
-                slot.image2png(preview_folder_name, folder_path);
+                slot.image2png(prefix, folder);
             end
 
         end
 
     end
 
-    % ------------------------------------------------------------------
     function construct_image(obj, Params, SHin)
-        % Populate all selected image slots from the short-time-transformed
-        % complex field SHin  [Nx × Ny × T].
 
-        if isempty(SHin), return, end
+        if isempty(SHin)
+            return
+        end
 
+        [~, ~, N] = size(SHin);
+
+        fs = Params.fs;
         f1 = Params.frequencyRange1;
         f2 = Params.frequencyRange2;
         fr1 = Params.frequencyRangeBandRatio1;
         fr2 = Params.frequencyRangeBandRatio2;
-        [Nx, Ny, batchSize] = size(SHin);
-        fs = Params.fs;
         gw = Params.flatfield_gw;
 
-        SH_mod = abs(SHin) .^ 2;
-        SH_arg = angle(SHin);
+        % Reject invalid input before constructing any image.
+        badInput = ~isfinite(SHin);
 
-        if Params.CornerCompensation
-            disk = diskMask(Ny, Nx, 1.2);
-            outsideMask = ~disk;
-            largeMask = repmat(outsideMask, [1 1 batchSize]);
-            SH_outside = SH_mod;
-            SH_outside(~largeMask) = NaN;
-            cornerMean = mean(SH_outside, [1 2], 'omitnan');
-            cornerMean(~isfinite(cornerMean) | cornerMean <= 0) = 1;
-            SH_mod = SH_mod ./ cornerMean;
+        if any(badInput(:))
+            error('ImageTypeList:NonfiniteInput', ...
+                ['SHin already contains invalid values before image construction: ' ...
+                 '%d NaN and %d Inf out of %d samples. ' ...
+             'Inspect the upstream rendering pipeline.'], ...
+                nnz(isnan(SHin)), nnz(isinf(SHin)), numel(SHin));
         end
 
-        % --- Power Doppler variants ------------------------------------
+        S = abs(SHin) .^ 2;
+
+        if any(~isfinite(S(:)))
+            error('ImageTypeList:NonfinitePower', ...
+                ['Power computation produced nonfinite values from finite SHin. ' ...
+             'Check input magnitudes and numeric precision.']);
+        end
+
+        if Params.CornerCompensation
+            S = obj.compensateCorners(S);
+
+            if any(~isfinite(S(:)))
+                error('ImageTypeList:NonfiniteCompensatedPower', ...
+                'Corner compensation produced nonfinite power values.');
+            end
+
+        end
+
+        % Doppler power.
         if obj.power_Doppler.is_selected
-            obj.power_Doppler.image = moment0(SH_mod, f1, f2, fs, batchSize, gw);
+            obj.power_Doppler.image = ...
+                moment0(S, f1, f2, fs, N, gw);
+        end
+
+        if obj.power_1_Doppler.is_selected
+            obj.power_1_Doppler.image = ...
+                moment1(S, f1, f2, fs, N, gw);
+        end
+
+        if obj.power_2_Doppler.is_selected
+            obj.power_2_Doppler.image = ...
+                moment2(S, f1, f2, fs, N, gw);
         end
 
         if obj.power_Doppler_wiener.is_selected
-            base = moment0(SH_mod, f1, f2, fs, batchSize, gw);
+            base = moment0(S, f1, f2, fs, N, gw);
             obj.power_Doppler_wiener.image = wiener2(base, [2 2], 10);
         end
 
         if obj.power_adapt.is_selected
-            base = moment0(SH_mod, f1, f2, fs, batchSize);
-            obj.power_adapt.image = adapthisteq(rescale(base), ...
-                'NumTiles', [12 12], 'NBins', 128);
+            base = moment0(S, f1, f2, fs, N);
+            obj.power_adapt.image = adapthisteq( ...
+                rescale(base), 'NumTiles', [12 12], 'NBins', 128);
         end
 
-        if obj.power_1_Doppler.is_selected
-            obj.power_1_Doppler.image = moment1(SH_mod, f1, f2, fs, batchSize, gw);
-        end
-
-        if obj.power_2_Doppler.is_selected
-            obj.power_2_Doppler.image = moment2(SH_mod, f1, f2, fs, batchSize, gw);
-        end
-
-        % --- Color / directional Doppler --------------------------------
+        % Color and directional Doppler.
         if obj.color_Doppler.is_selected
-            M0 = moment0(SH_mod, f1, f2, fs, batchSize, gw);
-            [M0_low, M0_high] = composite(SH_mod, f1, fr2, f2, fs, batchSize, gw);
-            obj.color_Doppler.image = construct_colored_image(M0, M0_low, M0_high);
+            M0 = moment0(S, f1, f2, fs, N, gw);
+            [low, high] = composite(S, f1, fr2, f2, fs, N, gw);
+
+            obj.color_Doppler.image = ...
+                construct_colored_image(M0, low, high);
         end
 
         if obj.directional_Doppler.is_selected
-            [M0_pos, M0_neg] = directional(SH_mod, f1, f2, fs, batchSize, max(gw, 20));
-            obj.directional_Doppler.image = construct_directional_image(M0_pos, M0_neg);
+            [positive, negative] = directional( ...
+                S, f1, f2, fs, N, max(gw, 20));
+
+            obj.directional_Doppler.image = ...
+                construct_directional_image(positive, negative);
         end
 
-        % --- Spectral broadening plot -----------------------------------
         if obj.broadening.is_selected
-            obj.broadening.image = obj.renderBroadeningPlot(SH_mod, Params, fs);
+
+            if any(~isfinite(S(:)))
+                error('ImageTypeList:NonfiniteBroadeningInput', ...
+                    ['S contains nonfinite values immediately before broadening: ' ...
+                 '%d NaN and %d Inf out of %d samples.'], ...
+                    nnz(isnan(S)), nnz(isinf(S)), numel(S));
+            end
+
+            obj.broadening.image = obj.renderBroadeningPlot(S, Params);
         end
 
-        % --- Raw SH output ---------------------------------------------
-        % Derived images remain full resolution. Only SH and SH_avg are
-        % spatially block-averaged before storage/export. The frequency
-        % dimension is not modified.
-        if obj.SH.is_selected || obj.SH_avg.is_selected
-            binning = 16;
+        % Raw spectra: spatial binning only.
+        if obj.anySelected('SH', 'SH_avg')
+            obj.storeSpectra(S, Params);
+        end
 
-            if isfield(Params, 'SHSpatialBinning') && ...
-                    ~isempty(Params.SHSpatialBinning)
-                binning = Params.SHSpatialBinning;
-            end
+        % Reuse M0 and M2 when f_RMS is also requested.
+        if obj.anySelected('moment_0', 'f_RMS')
+            M0 = moment0(S, f1, f2, fs, N);
 
-            [SH_binned, binInfo] = obj.spatialBinPower( ...
-                SH_mod, binning);
-
-            if obj.SH.is_selected
-                obj.SH.parameters.SH = SH_binned;
-                obj.SH.parameters.vector = fftfreq( ...
-                    batchSize, 1 / fs);
-                obj.SH.parameters = obj.attachBinningInfo( ...
-                    obj.SH.parameters, binInfo);
-            end
-
-            if obj.SH_avg.is_selected
-                obj.SH_avg.parameters.SH = mean( ...
-                    SH_binned, 3, 'omitnan');
-                obj.SH_avg.parameters = obj.attachBinningInfo( ...
-                    obj.SH_avg.parameters, binInfo);
+            if obj.moment_0.is_selected
+                obj.moment_0.image = M0;
             end
 
         end
 
-        if obj.SH.is_selected
-            [SH_binned, binInfo] = obj.spatialBinPower( ...
-                SH_mod, Params.SHSpatialBinning);
+        if obj.anySelected('moment_2', 'f_RMS')
+            M2 = moment2(S, f1, f2, fs, N);
 
-            obj.SH.parameters.SH = SH_binned;
-            obj.SH.parameters.vector = fftfreq( ...
-                batchSize, 1 / fs);
-
-            obj.SH.parameters.spatial_binning = ...
-                binInfo.spatial_binning;
-
-            obj.SH.parameters.original_size = ...
-                binInfo.original_size;
-
-            obj.SH.parameters.crop_size = ...
-                binInfo.crop_size;
-
-            obj.SH.parameters.binned_size = ...
-                binInfo.binned_size;
-
-            obj.SH.parameters.reduction = ...
-                binInfo.reduction;
-
-            % Aperçu 2D : moyenne dans la bande Doppler utile
-            frequencyVector = obj.SH.parameters.vector;
-
-            spectralMask = abs(frequencyVector) >= f1 ...
-                & abs(frequencyVector) <= f2;
-
-            if any(spectralMask)
-                obj.SH.image = mean( ...
-                    SH_binned(:, :, spectralMask), ...
-                    3, "omitnan");
-            else
-                obj.SH.image = mean( ...
-                    SH_binned, 3, "omitnan");
+            if obj.moment_2.is_selected
+                obj.moment_2.image = M2;
             end
 
-        end
-
-        % --- Spectral moments ------------------------------------------
-        if obj.moment_0.is_selected
-            obj.moment_0.image = moment0(SH_mod, f1, f2, fs, batchSize);
         end
 
         if obj.moment_1.is_selected
-            obj.moment_1.image = moment1(SH_mod, f1, f2, fs, batchSize);
-        end
-
-        if obj.moment_2.is_selected
-            obj.moment_2.image = moment2(SH_mod, f1, f2, fs, batchSize);
+            obj.moment_1.image = moment1(S, f1, f2, fs, N);
         end
 
         if obj.arg_0.is_selected
-            obj.arg_0.image = moment0(SH_arg, f1, f2, fs, batchSize);
+            obj.arg_0.image = moment0(angle(SHin), f1, f2, fs, N);
         end
 
         if obj.f_RMS.is_selected
-            M0 = moment0(SH_mod, f1, f2, fs, batchSize);
-            M2 = moment2(SH_mod, f1, f2, fs, batchSize);
             denominator = M0;
             denominator(~isfinite(denominator) | denominator <= 0) = NaN;
+
             obj.f_RMS.image = sqrt(M2 ./ denominator);
         end
 
+        % Frequency bands and statistics.
         if obj.HF_M0.is_selected
-            obj.HF_M0.image = moment0(SH_mod, fr2, f2, fs, batchSize);
+            obj.HF_M0.image = moment0(S, fr2, f2, fs, N);
         end
 
         if obj.LF_M0.is_selected
-            obj.LF_M0.image = moment0(SH_mod, f1, fr1, fs, batchSize);
+            obj.LF_M0.image = moment0(S, f1, fr1, fs, N);
         end
 
-        % --- Spectral statistics ---------------------------------------
         if obj.cumulative_distribution.is_selected
-            obj.cumulative_distribution.image = cdf(SH_mod, f1, f2, fs, 0.5, batchSize);
+            obj.cumulative_distribution.image = ...
+                cdf(S, f1, f2, fs, 0.5, N);
         end
 
         if obj.band_ratio.is_selected
-            obj.band_ratio.image = energy_ratio(SH_mod, f1, f2, fr1, fr2, fs, batchSize);
+            obj.band_ratio.image = ...
+                energy_ratio(S, f1, f2, fr1, fr2, fs, N);
         end
 
         if obj.entropy.is_selected
-            obj.entropy.image = spectral_entropy(SH_mod, f1, f2, fs, batchSize);
+            obj.entropy.image = spectral_entropy(S, f1, f2, fs, N);
         end
 
-        % Compute the Gaussian estimates if any associated image is requested.
+        % Original Gaussian width: complete spectrum.
         needDiagnostic = obj.harmonic_spectrum.is_selected;
 
-        needGaussian = ...
-            obj.gaussian_w.is_selected || ...
-            obj.sigma.is_selected || ...
-            obj.h1.is_selected || ...
-            obj.h2.is_selected || ...
-            needDiagnostic;
+        needGaussian = obj.anySelected( ...
+            'gaussian_w', 'sigma', 'h1', 'h2', 'harmonic_spectrum');
 
         if needGaussian
 
             if needDiagnostic
                 [I_FWHM, I_sigma, I_h1, I_h2, diagnostic] = ...
-                    gaussian_width( ...
-                    SH_mod, 0, fs / 2, fs, batchSize);
+                    gaussian_width(S, 0, fs / 2, fs, N, 0);
             else
                 [I_FWHM, I_sigma, I_h1, I_h2] = ...
-                    gaussian_width( ...
-                    SH_mod, 0, fs / 2, fs, batchSize);
+                    gaussian_width(S, 0, fs / 2, fs, N, 0);
             end
 
             if obj.gaussian_w.is_selected
@@ -446,137 +362,193 @@ methods
 
         end
 
-        % --- Frequency buckets -----------------------------------------
-        if obj.buckets.is_selected
-            obj.computeBuckets(SH_mod, Params, fs, batchSize, gw);
-        end
-
-        if obj.full_buckets.is_selected
-            obj.computeFullBuckets(SH_mod);
-        end
-
     end
 
-    % ------------------------------------------------------------------
     function construct_image_from_FH(obj, Params, FHin)
-        % Populate FH_modulus_mean and FH_arg_mean from the Fourier-domain field.
 
-        if isempty(FHin), return, end
+        if isempty(FHin)
+            return
+        end
 
-        isAngular = strcmp(Params.spatialTransform, 'angular spectrum');
+        angular = strcmp(Params.spatialTransform, 'angular spectrum');
 
         if obj.FH_modulus_mean.is_selected
-            m = mean(abs(FHin), 3);
+            image = mean(abs(FHin), 3);
 
-            if isAngular
-                m = log10(fftshift(m));
+            if angular
+                image = log10(fftshift(image));
             end
 
-            obj.FH_modulus_mean.image = squeeze(m);
+            obj.FH_modulus_mean.image = squeeze(image);
         end
 
         if obj.FH_arg_mean.is_selected
-            m = mean(angle(FHin), 3);
+            image = mean(angle(FHin), 3);
 
-            if isAngular
-                m = fftshift(m);
+            if angular
+                image = fftshift(image);
             end
 
-            obj.FH_arg_mean.image = squeeze(m);
+            obj.FH_arg_mean.image = squeeze(image);
         end
 
     end
 
-    % ------------------------------------------------------------------
-    function construct_image_from_SVD(obj, ~, covin, Uin, szin)
-        % Populate SVD_cov and SVD_U.
-        % szin – size of the H batch [Nx Ny Nt] for reshaping Uin.
+    function construct_image_from_SVD(obj, ~, covariance, U, spatialSize)
 
-        if isempty(covin)
+        if isempty(covariance)
             obj.SVD_cov.image = [];
             obj.SVD_U.image = [];
             return
         end
 
         if obj.SVD_cov.is_selected
-            obj.SVD_cov.image = abs(covin);
+            obj.SVD_cov.image = abs(covariance);
         end
 
         if obj.SVD_U.is_selected
-            obj.SVD_U.image = obj.renderSvdMontage(Uin, szin);
+            obj.SVD_U.image = obj.renderSvdMontage(U, spatialSize);
         end
 
     end
 
-end % public methods
+end
 
-% -----------------------------------------------------------------------
 methods (Access = private)
 
-    function clearAll(obj)
-        fields = fieldnames(obj);
+    function names = targetNames(obj, names)
 
-        for k = 1:numel(fields)
-            obj.(fields{k}).clear();
+        if isempty(names) || ...
+                (isscalar(names) && strcmpi(string(names{1}), "all"))
+            names = fieldnames(obj);
         end
 
     end
 
-    % ------------------------------------------------------------------
-    function targets = resolveTargets(obj, args)
-        % Return the list of field names to act on.
-        if isempty(args)
-            targets = fieldnames(obj);
-        else
-            targets = args;
+    function selected = anySelected(obj, varargin)
+        selected = false;
+
+        for k = 1:numel(varargin)
+
+            if obj.(varargin{k}).is_selected
+                selected = true;
+                return
+            end
+
         end
 
     end
 
-    % ------------------------------------------------------------------
+    function S = compensateCorners(~, S)
+        [Nx, Ny, ~] = size(S);
+
+        outside = ~logical(diskMask(Ny, Nx, 1.2));
+
+        assert(isequal(size(outside), [Nx Ny]), ...
+            'ImageTypeList:InvalidCornerMask', ...
+        'Corner mask must match the image dimensions.');
+
+        outsideSpectra = reshape(S, Nx * Ny, []);
+        reference = mean(outsideSpectra(outside(:), :), 1, 'omitnan');
+        reference(~isfinite(reference) | reference <= 0) = 1;
+
+        S = S ./ reshape(reference, 1, 1, []);
+    end
+
+    function storeSpectra(obj, S, Params)
+        factor = 16;
+
+        if isfield(Params, 'SHSpatialBinning') && ...
+                ~isempty(Params.SHSpatialBinning)
+            factor = Params.SHSpatialBinning;
+        end
+
+        [binned, info] = obj.spatialBinPower(S, factor);
+        f = fftfreq(size(S, 3), 1 / Params.fs);
+
+        if obj.SH.is_selected
+            parameters = info;
+            parameters.SH = binned;
+            parameters.vector = f;
+
+            obj.SH.parameters = parameters;
+
+            mask = abs(f) >= Params.frequencyRange1 ...
+                & abs(f) <= Params.frequencyRange2;
+
+            if any(mask)
+                obj.SH.image = mean(binned(:, :, mask), 3, 'omitnan');
+            else
+                obj.SH.image = mean(binned, 3, 'omitnan');
+            end
+
+        end
+
+        if obj.SH_avg.is_selected
+            parameters = info;
+            parameters.SH = mean(binned, 3, 'omitnan');
+
+            obj.SH_avg.parameters = parameters;
+        end
+
+    end
+
+    function setHarmonicSpectrum(obj, coefficients, axisValues, indices, label)
+        slot = obj.harmonic_spectrum;
+
+        if ~slot.is_selected
+            return
+        end
+
+        slot.image = [];
+        slot.parameters = obj.emptyHarmonicParameters();
+
+        [slot.image, slot.parameters] = renderHarmonicSpectrum( ...
+            coefficients, axisValues, indices, label);
+    end
+
+    function parameters = emptyHarmonicParameters(~)
+        parameters = struct( ...
+            'axis', [], ...
+            'axisLabel', [], ...
+            'inputAxis', [], ...
+            'inputAxisLabel', [], ...
+            'fft', [], ...
+            'harmonicIndices', [], ...
+            'harmonicCoefficients', []);
+    end
+
     function [out, info] = spatialBinPower(~, in, factor)
-        % Average non-overlapping factor-by-factor spatial blocks.
-        % SH_mod is a power spectrum, so a block mean preserves the power
-        % scale; a block sum would multiply it by factor^2.
-
         validateattributes(factor, {'numeric'}, ...
-            {'scalar', 'real', 'finite', 'integer', 'positive'}, ...
-            mfilename, 'Params.SHSpatialBinning');
+            {'scalar', 'real', 'finite', 'integer', 'positive'});
+
         factor = double(factor);
 
-        originalSize = size(in);
-        nRows = originalSize(1);
-        nCols = originalSize(2);
-        nFreq = originalSize(3);
+        [nRows, nCols, nFreq] = size(in);
+        nRowsOut = floor(nRows / factor);
+        nColsOut = floor(nCols / factor);
+
+        assert(nRowsOut >= 1 && nColsOut >= 1, ...
+            'ImageTypeList:SHBinningTooLarge', ...
+        'SHSpatialBinning exceeds the spatial image size.');
+
+        cropSize = [nRowsOut nColsOut] * factor;
 
         if factor == 1
             out = in;
-            cropSize = [nRows nCols];
         else
-            nRowsOut = floor(nRows / factor);
-            nColsOut = floor(nCols / factor);
-
-            if nRowsOut < 1 || nColsOut < 1
-                error('ImageTypeList:SHBinningTooLarge', ...
-                    ['SHSpatialBinning=%d exceeds the SH spatial ', ...
-                 'size [%d %d].'], factor, nRows, nCols);
-            end
-
-            % Retain complete blocks only. This avoids unequal block areas
-            % when a dimension is not divisible by the binning factor.
-            cropSize = [nRowsOut * factor, nColsOut * factor];
             work = in(1:cropSize(1), 1:cropSize(2), :);
             work = reshape(work, ...
                 factor, nRowsOut, factor, nColsOut, nFreq);
 
             valid = isfinite(work);
             work(~valid) = 0;
+
             numerator = sum(sum(work, 1), 3);
             denominator = sum(sum(valid, 1), 3);
-            numerator = reshape(permute(numerator, ...
-                [2 4 5 1 3]), nRowsOut, nColsOut, nFreq);
-            denominator = reshape(permute(denominator, ...
-                [2 4 5 1 3]), nRowsOut, nColsOut, nFreq);
+
+            numerator = reshape(numerator, nRowsOut, nColsOut, nFreq);
+            denominator = reshape(denominator, nRowsOut, nColsOut, nFreq);
 
             out = numerator ./ denominator;
             out(denominator == 0) = NaN;
@@ -585,155 +557,61 @@ methods (Access = private)
 
         info = struct( ...
             'spatial_binning', [factor factor], ...
-            'original_size', originalSize, ...
+            'original_size', size(in), ...
             'binned_size', size(out), ...
             'crop_size', cropSize, ...
             'reduction', 'block_mean_power');
     end
 
-    % ------------------------------------------------------------------
-    function parameters = attachBinningInfo(~, parameters, info)
-        names = fieldnames(info);
-
-        for k = 1:numel(names)
-            parameters.(names{k}) = info.(names{k});
-        end
-
-    end
-
-    % ------------------------------------------------------------------
-    function img = renderBroadeningPlot(~, SH_mod, Params, fs)
-        % Render the spectral broadening plot into a raster image.
-        img = [];
+    function image = renderBroadeningPlot(~, S, Params)
+        image = [];
 
         try
-            fi = figure('Visible', 'off');
-            disk = diskMask(size(SH_mod, 1), size(SH_mod, 2), Params.registrationDiskRatio)';
-            spectrum_ploting(SH_mod, disk, fs, Params.frequencyRange1, Params.frequencyRange2);
-            frame = getframe(fi);
-            img = frame.cdata;
-            close(fi);
+            fig = figure('Visible', 'off');
+            cleanup = onCleanup(@() close(fig));
+
+            mask = diskMask( ...
+                size(S, 1), size(S, 2), Params.registrationDiskRatio)';
+
+            spectrum_ploting( ...
+                S, mask, Params.fs, ...
+                Params.frequencyRange1, Params.frequencyRange2);
+
+            frame = getframe(fig);
+            image = frame.cdata;
         catch E
             MEdisp(E);
         end
 
     end
 
-    function setHarmonicSpectrum(obj, fftValues, spectralAxis, ...
-            harmonicIndices, axisLabel)
-        % SETHARMONICSPECTRUM Store and display the FFT used for h1 and h2.
-        %
-        % fftValues:
-        %   Exact complex FFT vector used by the harmonic calculation.
-        %
-        % spectralAxis:
-        %   Coordinates corresponding to fftValues, in the same order.
-        %
-        % harmonicIndices:
-        %   MATLAB indices [indexH1 indexH2] into fftValues.
-        %
-        % axisLabel:
-        %   For example 'Frequency (Hz)' or 'Harmonic order'.
-        %
-        % No FFT, fftshift, amplitude normalization or averaging is applied here.
-
-        slot = obj.harmonic_spectrum;
-
-        if ~slot.is_selected
-            return;
-        end
-
-        if nargin < 5
-            axisLabel = 'Spectral coordinate';
-        end
-
-        % Clear previous results before attempting a new diagnostic.
-        slot.image = [];
-        slot.parameters = struct( ...
-            'axis', [], ...
-            'axisLabel', [], ...
-            'inputAxis', [], ...
-            'inputAxisLabel', [], ...
-            'fft', [], ...
-            'harmonicIndices', [], ...
-            'harmonicCoefficients', []);
-
-        [slot.image, slot.parameters] = renderHarmonicSpectrum( ...
-            fftValues, spectralAxis, harmonicIndices, axisLabel);
-    end
-
-    % ------------------------------------------------------------------
-    function img = renderSvdMontage(~, Uin, szin)
-        % Render the SVD spatial modes as a montage and return raster data.
-        img = [];
+    function image = renderSvdMontage(~, U, spatialSize)
+        image = [];
 
         try
-            fi = figure('Visible', 'off');
-            U3 = reshape(Uin, szin(1), szin(2), []);
-            U3 = abs(U3);
-            U3 = rescale(U3, 'InputMax', max(U3, [], [1, 2]), ...
-                'InputMin', min(U3, [], [1, 2]));
-            C = arrayfun(@(k) U3(:, :, k)', 1:size(U3, 3), 'UniformOutput', false);
-            montage(C, 'BorderSize', [0 0]);
+            fig = figure('Visible', 'off');
+            cleanup = onCleanup(@() close(fig));
+
+            U = abs(reshape(U, spatialSize(1), spatialSize(2), []));
+            U = rescale(U, ...
+                'InputMin', min(U, [], [1 2]), ...
+                'InputMax', max(U, [], [1 2]));
+
+            tiles = arrayfun( ...
+                @(k) U(:, :, k)', 1:size(U, 3), ...
+                'UniformOutput', false);
+
+            montage(tiles, 'BorderSize', [0 0]);
             set(gca, 'Position', [0 0 1 1]);
-            frame = getframe(fi);
-            img = frame.cdata;
-            close(fi);
+
+            frame = getframe(fig);
+            image = frame.cdata;
         catch E
             MEdisp(E);
         end
 
     end
 
-    % ------------------------------------------------------------------
-    function computeBuckets(obj, SH_mod, Params, fs, batchSize, gw)
-        [numX, numY, ~] = size(SH_mod);
-        buckranges = reshape(Params.bucketsRanges, [], 2);
+end
 
-        if buckranges(1, 1) == -1
-            % Auto-define 32 equal buckets up to Nyquist
-            edges = linspace(0, fs / 2, 33);
-            buckranges = [edges(1:end - 1)', edges(2:end)'];
-        end
-
-        numRanges = size(buckranges, 1);
-
-        obj.buckets.parameters.intervals_0 = zeros(numX, numY, 1, numRanges, 'single');
-        obj.buckets.parameters.intervals_1 = zeros(numX, numY, 1, numRanges, 'single');
-        obj.buckets.parameters.intervals_2 = zeros(numX, numY, 1, numRanges, 'single');
-        obj.buckets.parameters.M0 = zeros(numX, numY, 1, numRanges, 'single');
-
-        for rIdx = 1:numRanges
-            r1 = buckranges(rIdx, 1);
-            r2 = buckranges(rIdx, 2);
-            obj.buckets.parameters.intervals_0(:, :, :, rIdx) = moment0(SH_mod, r1, r2, fs, batchSize);
-            obj.buckets.parameters.intervals_1(:, :, :, rIdx) = moment1(SH_mod, r1, r2, fs, batchSize);
-            obj.buckets.parameters.intervals_2(:, :, :, rIdx) = moment2(SH_mod, r1, r2, fs, batchSize);
-            obj.buckets.parameters.M0(:, :, :, rIdx) = moment0(SH_mod, r1, r2, fs, batchSize, gw);
-        end
-
-        obj.buckets.image = mean(obj.buckets.parameters.M0, [3 4]);
-    end
-
-    % ------------------------------------------------------------------
-    function computeFullBuckets(obj, SH_mod)
-        [numX, numY, nFreq] = size(SH_mod);
-        nBuckets = 32;
-        edges = round(linspace(1, nFreq + 1, nBuckets + 1));
-
-        SH_full = zeros(numX, numY, nBuckets, 'single');
-
-        for bIdx = 1:nBuckets
-            i1 = edges(bIdx);
-            i2 = edges(bIdx + 1) - 1;
-            bucketMean = mean(SH_mod(:, :, i1:i2), 3);
-            bucketMean = max(bucketMean, realmin('single'));
-            SH_full(:, :, bIdx) = single(log(bucketMean));
-        end
-
-        obj.full_buckets.parameters.SH_full = SH_full;
-    end
-
-end % private methods
-
-end % classdef
+end
