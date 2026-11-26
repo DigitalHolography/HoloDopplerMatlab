@@ -129,7 +129,7 @@ methods (Access = private)
 
     function startupFcn(app)
         appRoot = fileparts(mfilename('fullpath'));
-        addpath(appRoot, genpath(fullfile(appRoot, 'src')), fullfile(appRoot, 'Tools'));
+        addpath(appRoot, genpath(fullfile(appRoot, 'src')), fullfile(appRoot, 'tools'));
 
         versionFile = fullfile(appRoot, 'version.txt');
 
@@ -166,48 +166,6 @@ methods (Access = private)
                 'Splash screen skipped: %s', ME.message);
         end
 
-    end
-
-    function [versionStr, gitInfo] = getVersionInfo(app, appRoot)
-        version = "unknown";
-        versionFile = fullfile(appRoot, 'version.txt');
-
-        if isfile(versionFile)
-            lines = strip(readlines(versionFile));
-            lines = lines(strlength(lines) > 0);
-
-            if ~isempty(lines)
-                version = lines(1);
-            end
-
-        end
-
-        versionStr = char("HoloDoppler " + version);
-        gitInfo = '';
-
-        % .git can be either a directory or a file, e.g. in a worktree.
-        gitPath = fullfile(appRoot, '.git');
-
-        if ~isfolder(gitPath) && ~isfile(gitPath)
-            return;
-        end
-
-        [branchOK, branch] = app.readGit(appRoot, ...
-        'rev-parse --abbrev-ref HEAD');
-        [commitOK, commit] = app.readGit(appRoot, ...
-        'rev-parse --short HEAD');
-
-        if branchOK && commitOK
-            gitInfo = sprintf('Branch: %s | Commit: %s', branch, commit);
-        end
-
-    end
-
-    function [ok, output] = readGit(~, appRoot, gitArgs)
-        command = sprintf('git -C "%s" %s', appRoot, gitArgs);
-        [status, output] = system(command);
-        ok = status == 0;
-        output = strtrim(output);
     end
 
     function ready = hasFile(app)
@@ -1002,7 +960,7 @@ methods (Access = private)
         app.HoloDopplerUIFigure = uifigure('Visible', 'off', ...
             'Position', [appX appY appWidth appHeight], ...
             'Name', 'HoloDoppler', ...
-            'Icon', fullfile(pathToMLAPP, 'holoDopplerLogo.png'), ...
+            'Icon', fullfile(pathToMLAPP, 'src', 'gui', 'holoDopplerLogo.png'), ...
             'CloseRequestFcn', createCallbackFcn(app, @HoloDopplerUIFigureCloseRequest, true), ...
             'WindowKeyPressFcn', createCallbackFcn(app, @HoloDopplerUIFigureWindowKeyPress, true), ...
             'WindowStyle', 'normal'); % allows maximizing on Windows

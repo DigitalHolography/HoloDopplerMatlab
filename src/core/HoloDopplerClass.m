@@ -444,7 +444,8 @@ methods
         'Error while saving the parameters.');
 
         writeJson(fullfile(folder, sprintf('%s_HD_input_HD_params.json', obj.file.name)), params);
-        writeVersionInfo(folder, fileparts(mfilename('fullpath')));
+        root = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+        writeVersionInfo(folder, root);
 
         fprintf('Video saving took %.2f s - results in %s\n', toc(tSave), folder);
     end
