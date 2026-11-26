@@ -5,7 +5,10 @@ function launchBatchFunction(listFile, paramFile)
 
 fprintf("=== HOLOPROCESS START ===\n");
 
-version_tag = readlines("version.txt");
+appRoot = fileparts(mfilename('fullpath'));
+addpath(appRoot, genpath(fullfile(appRoot, 'src')));
+defaultConfigFile = fullfile(appRoot, 'src', 'configs', 'CurrentDefault.txt');
+version_tag = readlines(fullfile(appRoot, "version.txt"));
 fprintf("HoloDoppler version : %s\n", version_tag);
 
 % Load list of holofiles
@@ -47,8 +50,6 @@ if nargin >= 2 && ~isempty(paramFile)
     fprintf("Using provided parameter file: %s\n", paramspath);
 else
     % Load default config if available
-    defaultConfigFile = fullfile("StandardConfigs", "CurrentDefault.txt");
-
     if isfile(defaultConfigFile)
         DefConfName = strtrim(readlines(defaultConfigFile));
 

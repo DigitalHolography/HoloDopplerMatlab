@@ -129,7 +129,7 @@ methods (Access = private)
 
     function startupFcn(app)
         appRoot = fileparts(mfilename('fullpath'));
-        addpath(appRoot, genpath(fullfile(appRoot, 'src')), fullfile(appRoot, 'tools'));
+        addpath(appRoot, genpath(fullfile(appRoot, 'src')));
 
         versionFile = fullfile(appRoot, 'version.txt');
 
@@ -463,7 +463,8 @@ methods (Access = private)
 
         plotTypes = {'broadening', 'harmonic_spectrum'};
 
-        if ~ismember(app.HD.params.imageTypes{num}, plotTypes) && ...
+        if app.HD.params.square && ...
+                ~ismember(app.HD.params.imageTypes{num}, plotTypes) && ...
                 size(image, 1) ~= size(image, 2)
 
             maxSize = max(size(image, 1), size(image, 2));

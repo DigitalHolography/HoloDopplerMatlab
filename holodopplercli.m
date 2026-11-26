@@ -1,7 +1,9 @@
 function holodopplercli(varargin)
 % Initialize Application
 appRoot = fileparts(mfilename('fullpath'));
-versionFile = fullfile(appRoot, "version.txt");
+addpath(appRoot, genpath(fullfile(appRoot, 'src')));
+defaultConfigFile = fullfile(appRoot, 'src', 'configs', 'CurrentDefault.txt');
+% et fullfile(appRoot, 'src', 'configs', sprintf('%s.json', DefConfName(1)))
 
 fprintf("Application root is %s\n", appRoot);
 
@@ -15,7 +17,6 @@ end
 % --- ARGUMENT PARSING ---
 mode = 'single';
 inputPath = "";
-paths = string.empty;
 paramspath = "";
 
 idx = 1;
@@ -113,7 +114,6 @@ end
 
 % 2. Check for default config definition (if no custom provided)
 if paramspath == ""
-    defaultConfigFile = fullfile(appRoot, "StandardConfigs", "CurrentDefault.txt");
 
     if isfile(defaultConfigFile)
         DefConfName = strtrim(readlines(defaultConfigFile));
