@@ -27,14 +27,8 @@ methods
     function obj = HoloDopplerClass()
 
         if ~isdeployed
-            root = fileparts(mfilename('fullpath'));
-            subdirs = {'FolderManagement', 'Imaging', 'Interface', 'ReaderClasses', ...
-                           'Rendering', 'Saving', fullfile('Saving', 'Registering'), 'Tools', 'StandardConfigs'};
-
-            for s = subdirs
-                addpath(fullfile(root, s{1}));
-            end
-
+            root = fileparts(fileparts(fileparts(mfilename('fullpath'))));
+            addpath(genpath(fullfile(root, 'src')));
         end
 
         obj.render = RenderingClass();

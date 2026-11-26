@@ -110,11 +110,11 @@ for f in Tools/Copy_of_ExploreAp.m; do
 done
 
 # ---------- OPTIONNEL (décommente après avoir patché les chemins) ----------
-# run mkdir -p configs
-# run git mv StandardConfigs/* configs/        # et remplacer 'StandardConfigs' dans le code
-# run mkdir -p assets
-# run git mv holoDopplerLogo.png assets/
-# run git rm -q Tools/holoDopplerLogo.png      # doublon (même taille : 66468 octets)
+run mkdir -p configs
+run git mv StandardConfigs/* configs/        # et remplacer 'StandardConfigs' dans le code
+run mkdir -p assets
+run git mv holoDopplerLogo.png assets/
+run git rm -q Tools/holoDopplerLogo.png      # doublon (même taille : 66468 octets)
 
 echo
 echo "Fichiers .m restants hors src/ :"

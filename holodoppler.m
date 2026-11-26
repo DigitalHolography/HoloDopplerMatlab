@@ -129,15 +129,28 @@ methods (Access = private)
 
     function startupFcn(app)
         appRoot = fileparts(mfilename('fullpath'));
+        addpath(appRoot, genpath(fullfile(appRoot, 'src')), fullfile(appRoot, 'Tools'));
 
-        app.OriginalPath = path;
-        addpath(fullfile(appRoot, 'Tools'));
+        versionFile = fullfile(appRoot, 'version.txt');
 
-        logName = sprintf('holodoppler_%s.txt', ...
-            char(datetime('now', 'Format', 'yyyyMMdd_HHmmss')));
-        diary(fullfile(tempdir, logName));
+        if isfile(versionFile)
+            v = readlines(versionFile);
+            version = char(v(1));
+        else
+            version = 'unknown';
+            warning('holodoppler:noVersionFile', 'version.txt not found.');
+        end
 
-        [versionStr, gitInfo] = app.getVersionInfo(appRoot);
+        versionStr = ['HoloDoppler ' version];
+
+        gitInfo = '';
+
+        if exist(fullfile(appRoot, '.git'), 'dir')
+            [~, branch] = system('git rev-parse --abbrev-ref HEAD');
+            [~, hash] = system('git rev-parse --short HEAD');
+            gitInfo = sprintf('Branch: %s | Commit: %s', strtrim(branch), strtrim(hash));
+        end
+
         app.HoloDopplerUIFigure.Name = versionStr;
 
         app.HD = HoloDopplerClass();

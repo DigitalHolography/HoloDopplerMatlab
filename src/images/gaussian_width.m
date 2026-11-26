@@ -49,16 +49,16 @@ end
 
 assert(ndims(SH) <= 3 && size(SH, 3) == batchSize, ...
     'gaussian_width:InvalidSize', ...
-    'SH must have dimensions [Nx, Ny, batchSize].');
+'SH must have dimensions [Nx, Ny, batchSize].');
 
 assert(f2 > f1, ...
     'gaussian_width:InvalidBand', ...
-    'f2 must be greater than f1.');
+'f2 must be greater than f1.');
 
 assert(gw == 0, ...
     'gaussian_width:UnsupportedCorrection', ...
     ['Use gw=0. Multiplicative flat-field correction is not ' ...
-     'applied to this width estimator.']);
+ 'applied to this width estimator.']);
 
 % Prepare spectrum and frequency axis
 
@@ -77,7 +77,7 @@ f = double(f(:));
 
 assert(numel(f) == batchSize && all(isfinite(f)), ...
     'gaussian_width:InvalidFrequencyAxis', ...
-    'fftfreq must return batchSize finite frequencies.');
+'fftfreq must return batchSize finite frequencies.');
 
 abs_f = abs(f);
 mask = (abs_f >= f1) & (abs_f <= f2);
@@ -85,12 +85,12 @@ mask = (abs_f >= f1) & (abs_f <= f2);
 assert(all(mask), ...
     'gaussian_width:IncompleteSpectrum', ...
     ['This estimator requires every bin of a complete FFT period. ' ...
-     'Use f1=0 and f2=fs/2, with no masked or missing bins.']);
+ 'Use f1=0 and f2=fs/2, with no masked or missing bins.']);
 
 % Fourier harmonics along the frequency dimension
 
-weight1 = reshape(exp(-1i * 2*pi * f / fs), 1, 1, []);
-weight2 = reshape(exp(-1i * 4*pi * f / fs), 1, 1, []);
+weight1 = reshape(exp(-1i * 2 * pi * f / fs), 1, 1, []);
+weight2 = reshape(exp(-1i * 4 * pi * f / fs), 1, 1, []);
 
 % The common integration factor df cancels in the harmonic ratio.
 H1 = sum(SH .* weight1, 3);
@@ -141,7 +141,7 @@ if nargout >= 5
 
     if isempty(candidateIndices)
         error('gaussian_width:NoDiagnosticPixel', ...
-            'No finite, positive-power pixel is available for the diagnostic.');
+        'No finite, positive-power pixel is available for the diagnostic.');
     end
 
     [~, bestIndex] = max(h1(candidateIndices));
@@ -154,9 +154,9 @@ if nargout >= 5
     % weighted harmonic sums used above. Frequencies may differ by fs
     % because the input axis uses signed FFT frequencies.
     expectedPhase = exp( ...
-        -1i * 2*pi * (0:batchSize-1).' / batchSize);
+        -1i * 2 * pi * (0:batchSize - 1).' / batchSize);
 
-    actualPhase = exp(-1i * 2*pi * f / fs);
+    actualPhase = exp(-1i * 2 * pi * f / fs);
 
     if isa(actualPhase, 'gpuArray')
         orderingError = gather(max(abs(actualPhase - expectedPhase)));
@@ -167,7 +167,7 @@ if nargout >= 5
     assert(orderingError < 1e-10, ...
         'gaussian_width:UnexpectedFrequencyOrdering', ...
         ['The frequency ordering does not match an unshifted FFT. ' ...
-        'Reorder the spectrum and its frequency axis consistently.']);
+     'Reorder the spectrum and its frequency axis consistently.']);
 
     % Transform along the spectral-bin dimension.
     coefficients = fft(spectrum);
@@ -175,9 +175,9 @@ if nargout >= 5
     % Signed harmonic orders in the same ordering as fft().
     % Even N: [0 ... N/2-1 -N/2 ... -1]
     % Odd  N: [0 ... (N-1)/2 -(N-1)/2 ... -1]
-    harmonicOrders = (0:batchSize-1).';
-    harmonicOrders(harmonicOrders > floor((batchSize-1)/2)) = ...
-        harmonicOrders(harmonicOrders > floor((batchSize-1)/2)) ...
+    harmonicOrders = (0:batchSize - 1).';
+    harmonicOrders(harmonicOrders > floor((batchSize - 1) / 2)) = ...
+        harmonicOrders(harmonicOrders > floor((batchSize - 1) / 2)) ...
         - batchSize;
 
     diagnostic.fft = coefficients;
