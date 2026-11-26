@@ -26,7 +26,7 @@ end
 video_avg = double(mean(video, 4));
 
 fprintf('Saving PNG: %s\n', output_file);
-imwrite(video_avg, output_file);
+imwrite(rescale(video_avg), output_file);
 
 % STD second
 output_file = fullfile(png_dir, ...
@@ -36,9 +36,9 @@ if isfile(output_file)
     delete(output_file)
 end
 
-video_std = std(video, 0, 4);
+video_std = double(std(video, 0, 4));
 
 fprintf('Saving STD PNG: %s\n', output_file);
-imwrite(video_std, output_file);
+imwrite(rescale(video_std), output_file);
 
 end

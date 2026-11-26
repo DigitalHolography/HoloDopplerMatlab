@@ -118,14 +118,6 @@ exploreSHbroadBtn.FontColor = textColor;
 exploreSHbroadBtn.Layout.Row = 5;
 exploreSHbroadBtn.Layout.Column = 3;
 exploreSHbroadBtn.ButtonPushedFcn = @(~, ~) exploreSHBroadening_Callback(app);
-% Explore Ap button
-exploreApBtn = uibutton(mainGrid, 'push');
-exploreApBtn.Text = 'Explore Ap';
-exploreApBtn.BackgroundColor = btnColor;
-exploreApBtn.FontColor = textColor;
-exploreApBtn.Layout.Row = 6;
-exploreApBtn.Layout.Column = 1;
-exploreApBtn.ButtonPushedFcn = @(btn, event) ExploreAp(app.HD.render.Frames, app.HD.params);
 
 % Explore Z button
 exploreZBtn = uibutton(mainGrid, 'push');
